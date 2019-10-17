@@ -377,7 +377,52 @@ HTTP重定向服务器是一台普通的应用服务器，其唯一的功能就�
 
 共享锁与排他锁见上。
 
-# 六. 多线程的五大状态？
+# 六. 多线程的六种状态？
+
+线程有六种状态：**NEW, RUNNABLE(RUNNING), WAITING, TIME\_WAITING, BLOCKED, TERMINATED**。
+
+![线程六种状态](https://images2018.cnblogs.com/blog/930824/201807/930824-20180715222029724-1669695888.jpg)
+
+## 6.1 NEW
+
+线程刚刚被创建的时候，即 new Thread()，且尚未执行 start() 方法的状态；
+
+## 6.2 RUNNABLE / RUNNING
+
+RUNNABLE(或称 READY) 与 RUNNING 是线程**已经准备执行**或**正在执行**的状态，是线程执行了 start() 方法之后状态。线程处于 RUNNABLE 或者是 RUNNING 状态，取决于 CPU 的调度，获取了 CPU 使用权的线程处于 RUNNING 状态，否则处于就绪状态 (RUNNABLE)。进入该状态的方法如下：
+
+- **RUNNABLE -> RUNNING**: CPU 调度后，获取 CPU 的使用权；
+- **RUNNING -> RUNNABLE**: 失去 CPU 的使用权，回到就绪状态；
+- **NEW -> RUNNABLE**: thread.start() 方法调用；
+- **WAITING -> RUNNABLE**: notify/notifyAll 方法调用；
+- **TIME\_WAITING -> RUNNABLE**: notify/notifyAll 方法调用；
+
+## 6.3 WAITING
+
+WAITING 为等待状态，需要进行某些特定动作之后才能回到正常的运行状态，时间不确定
+。进入该状态的方法如下：
+
+- **RUNNABLE -> WAITING**: wait/join 方法调用；
+
+## 6.4 TIME_WAITING
+
+TIME\_WAITING 同样为等待状态，也需要进行某些特定动作才能回到正常运行状态。与 WAITING 方法不同的是 TIME\_WAITING 状态的时间是确定的。进入该状态的方法如下：
+
+- **RUNNABLE -> TIME\_WAITING**: sleep 方法调用；
+
+## 6.5 BLOCKED
+
+BLOCKED 状态是在获取锁过程中被阻塞的状态，通常用于 synchronized, lock 的使用场景中。进入该状态的方法如下：
+
+- **RUNNABLE -> BLOCKED**: synchronized, lock 阻塞；
+
+## 6.6 TERMINATED
+
+TERMINATED 状态标志着一个线程的结束，处于 TERMINATED 状态的线程不能再转变为其他状态。进入该状态的方法如下：
+
+- 线程正常的运行完毕；
+- 线程运行抛出异常；
+- JVM Crash，所有线程全部结束；
 
 # 七. Java中nio和io的区别？常用的类有哪些？
 
