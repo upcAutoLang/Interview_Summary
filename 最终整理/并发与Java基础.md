@@ -1099,3 +1099,168 @@ Lock 和 synchronized 的区别：
 
 上面介绍的这些就是常用的一些高并发的设计模式，其中每一条都值得深入的研究，本文只是介绍了高并发设计时需要考虑的设计方案简介，可以通过这些方案缓解压力提高并发性能和高可用，每一点都可以单独去详细介绍下，后面我会再写几篇分别介绍下这些模式的具体应用方式。
 
+# 十八. 生产者消费者模型的实现
+
+## 1. 阻塞队列 BlockingQueue
+
+实现如下：
+
+```java
+import java.util.concurrent.BlockingQueue;
+
+public class Consumer implements Runnable {
+    /*
+        BlockingQueue put(e) 和 take() 这两个方法是带阻塞的。
+     */
+    BlockingQueue<String> queue;
+
+    public Consumer(BlockingQueue queue) {
+        this.queue = queue;
+    }
+
+    @Override
+    public void run() {
+        try {
+            String tmp = queue.take();
+            System.out.println(Thread.currentThread().getName() + " have consumed a product from " + tmp);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+    }
+}
+```
+
+```java
+import java.util.concurrent.BlockingQueue;
+
+public class Producer implements Runnable {
+    BlockingQueue<String> queue;
+
+    public Producer(BlockingQueue queue) {
+        this.queue = queue;
+    }
+
+    @Override
+    public void run() {
+        try {
+            String tmp = Thread.currentThread().getName();
+            System.out.println(Thread.currentThread().getName() + " have made a product");
+            queue.put(tmp);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+```java
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+public class Main {
+    public static void main(String[] args) {
+        BlockingQueue<String> queue = new LinkedBlockingQueue<String>(2);
+
+        Producer producer = new Producer(queue);
+        Consumer consumer = new Consumer(queue);
+        for (int i = 0; i < 5; i++) {
+            new Thread(producer, "Producer" + (i + 1)).start();
+
+            new Thread(consumer, "Consumer" + (i + 1)).start();
+        }
+
+    }
+}
+```
+
+2. wait, notify 的方式实现
+
+> 参考地址：  
+> [《多线程的休息室WaitSet详细介绍》](https://www.cnblogs.com/ch-forever/p/10752499.html)  
+> [《生产者消费者--BlockingQueue和wait、notify两种方式实现》](https://blog.csdn.net/weixin_40183884/article/details/83152825)
+
+WAITTING 是多线程的一种状态，使用了 Object#wait(), LockSupport#park() 的方法都会进入 WAITTING 状态（放弃了对该对象锁的争夺权）。notify() 可以唤醒被 wait 的方法，使用了 Object#notify(), notifyAll(), LockSupport#unpark() 的方法可以把线程从 WAITTING 状态转到 RUNNABLE 状态。
+
+实际上，所有对象都有一个**线程休息室 wait set**，用于存放调用了**该对象 wait 方法后进入了 WAITTING 状态的线程**。  
+当调用该对象的 notify() 方法时，wait set 中会弹出一个线程，重新进入争夺该对象的锁；此外，Java 官方只定义了 waitset，却没有定义 waitset 的具体数据结构，所以根据 Java 虚拟机厂商的不同，waitset 可以使用 list, set 等不同的数据结构，所以线程从 waitset 中唤醒的顺序并不一定是 FIFO；  
+当调用该对象的 notifyAll() 方法时，wait set 会将在其中的所有线程弹出，这些线程重新争夺该对象的锁。
+
+```java
+import java.util.LinkedList;
+import java.util.List;
+
+public class Consumer implements Runnable {
+    private List<String> buffer = new LinkedList<String>();
+    private Integer capacity;
+
+    public Consumer(List buffer, Integer capacity) {
+        this.buffer = buffer;
+        this.capacity = capacity;
+    }
+
+    @Override
+    public void run() {
+        synchronized (capacity){
+            try {
+                if (buffer.isEmpty())
+                    capacity.wait();
+                String tmp = buffer.remove(0);
+                System.out.println(Thread.currentThread().getName() + " have consume a product from " + tmp);
+                capacity.notifyAll();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}
+```
+
+```java
+import java.util.LinkedList;
+import java.util.List;
+
+public class Producer implements Runnable {
+    private List<String> buffer = new LinkedList<String>();
+    private Integer capacity;
+
+    public Producer(List buffer, Integer capacity) {
+        this.buffer = buffer;
+        this.capacity = capacity;
+    }
+
+    @Override
+    public void run() {
+        synchronized (capacity){
+            try {
+                if (buffer.size() >= capacity)
+                    capacity.wait();
+                buffer.add(Thread.currentThread().getName());
+                System.out.println(Thread.currentThread().getName() + " have made a product");
+                capacity.notifyAll();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}
+```
+
+```java
+import java.util.LinkedList;
+import java.util.List;
+
+public class Main {
+
+    public static void main(String[] args) {
+        Integer capacity = 5;
+        List<String> buffer = new LinkedList<String>();
+        Producer producer = new Producer(buffer, capacity);
+        Consumer consumer = new Consumer(buffer, capacity);
+        for (int i = 1; i < 5; i++) {
+            new Thread(producer,"Producer" + i).start();
+            new Thread(consumer,"Consumer" + i).start();
+        }
+    }
+}
+```
