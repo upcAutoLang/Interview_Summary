@@ -930,7 +930,11 @@ public class Test {
 # 十. Java 的锁有哪些？可重入锁和不可重入锁的区别？
 
 [《Java并发编程：Lock》](https://www.cnblogs.com/dolphin0520/p/3923167.html)  
-[《java 锁 Lock接口详解》](https://www.cnblogs.com/myseries/p/10784076.html)
+[《java 锁 Lock接口详解》](https://www.cnblogs.com/myseries/p/10784076.html)   
+
+[《[死磕 java同步系列之ReentrantLock源码解析（一）——公平锁、非公平锁]》](https://www.cnblogs.com/tong-yuan/p/ReentrantLock.html))
+
+## 10.1 Java 锁的分类
 
 锁的类型目前感觉可以分成两大类：synchronized 关键字，以及 Lock, ReadWriteLock 锁以及 Reentrant 为前缀修饰的实现类 (ReentrantLock, ReentrantReadWriteLock)；
 
@@ -985,6 +989,34 @@ public class Count {
     }
 }
 ```
+
+Lock 接口主要有六个方法：
+
+```java
+// 获取锁
+void lock();
+// 获取锁，可中断
+void lockInterruptibly() throws InterruptedException;
+// 尝试获取锁；如果没有获取到，则返回 false；如果获取到则返回 true
+boolean tryLock();
+// 尝试在某段时间内获取锁，如果等待一段时间仍没有获取到则返回 false；
+boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+// 释放锁
+void unlock();
+// 条件锁
+Condition newCondition();
+```
+
+## 10.2 公平锁与非公平锁
+
+为什么ReentrantLock默认采用的是非公平模式？因为非公平模式效率比较高。非公平模式会在一开始就尝试两次获取锁，如果当时正好 state 的值为 0，它就会成功获取到锁，少了排队导致的阻塞/唤醒过程，并且减少了线程频繁的切换带来的性能损耗。  
+
+同时非公平模式也存在弊端。非公平模式有可能会导致一开始排队的线程**一直获取不到锁**，导致线程饿死。  
+
+公平锁与非公平锁在源码上的区别：
+
+- **公平锁**：在尝试获取锁的时候，首先会判断 AQS 线程队列的头部是否为当前线程（队列的特性决定了公平性），如果**当前线程位于 AQS 线程队列的头部**，则说明当前线程等待的时间最长，当前线程有资格比较状态，然后才能获取到锁。
+- **非公平锁**：尝试获取锁的时候不会判断 AQS 队列头部信息，直接进行比较状态并尝试获取锁。
 
 # 十一. Lock 和 Synchronized 的区别？他们都是可重入锁吗？哪个效率更高？
 
