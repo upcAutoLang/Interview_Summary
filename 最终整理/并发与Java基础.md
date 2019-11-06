@@ -1,6 +1,6 @@
 # 一. Java 中线程池是如何实现的？创建线程池的几个核心构造参数是什么？
 
-实现：
+## 1.1 实现
 
 1. 线程数小于 coreSize，创建线程，直到 coreSize 的数量；
 2. BlockingQueue 一直堆积线程；堆积到 BlockingQueue 的最大容量，此时开始开启线程，直到 maxSize；
@@ -9,7 +9,7 @@
 
 注：1, 2, 3 步骤在 ThreadPoolExecutor # execute(Runnable command) 方法中；
 
-核心构造参数：
+## 1.2 核心构造参数
 
 - coreSize: 核心线程数量，平时维持的线程数量；
 - maxSize: 最大线程数量，如果 BlockingQueue 任务队列里堆积的任务过多，超过了队列限定最大值，则线程增多，增多至 maxSize 的线程数量；
@@ -17,6 +17,13 @@
 - keepTimeAlive: 如果当前线程数量大于 coreSize，且线程空闲超过 keepTimeAlive 值，则释放该线程，最多释放到 coreSize 的线程数量；
 - RejectPolicy: 拒绝策略；当队列已满，再向其中塞任务时的拒绝策略；
 - threadFactory: 线程工厂，使用各自的方法生产线程；比如可以使用 NamedThreadFactory，可以为线程池命名；
+
+## 1.3 拒绝策略
+
+- **ThreadPoolExecutor.AbortPolicy**：丢弃任务并抛出 RejectedExecutionException 异常。 
+- **ThreadPoolExecutor.DiscardPolicy**：也是丢弃任务，但是不抛出异常。 
+- **ThreadPoolExecutor.DiscardOldestPolicy**：丢弃队列最前面的任务，然后重新尝试执行任务（重复此过程）；
+- **ThreadPoolExecutor.CallerRunsPolicy**：由调用线程处理该任务 ；
 
 > 参考地址：[《线程池ThreadPoolExecutor实现原理》](https://www.jianshu.com/p/125ccf0046f3)
 
@@ -922,7 +929,8 @@ public class Test {
 
 # 十. Java 的锁有哪些？可重入锁和不可重入锁的区别？
 
-[《Java并发编程：Lock》](https://www.cnblogs.com/dolphin0520/p/3923167.html)
+[《Java并发编程：Lock》](https://www.cnblogs.com/dolphin0520/p/3923167.html)  
+[《java 锁 Lock接口详解》](https://www.cnblogs.com/myseries/p/10784076.html)
 
 锁的类型目前感觉可以分成两大类：synchronized 关键字，以及 Lock, ReadWriteLock 锁以及 Reentrant 为前缀修饰的实现类 (ReentrantLock, ReentrantReadWriteLock)；
 
@@ -930,7 +938,7 @@ public class Test {
 
 - 实现方式：synchronized / Lock, ReadWriteLock 及其实现类；
 - 可中断性：synchronized / Lock
-- **公平性**：ReentrantLock 构造函数中，传入 boolean 值，可以控制公平性，默认不公平；公平锁按照锁的申请顺序分配所，可能导致某个线程永远都获取不到锁；
+- **公平性**：ReentrantLock 构造函数中，传入 boolean 值，可以控制公平性，默认非公平；公平锁按照锁的申请顺序分配锁，申请锁时间最长的线程在下一次会最早得到锁；非公平锁不对申请锁的时间进行保证，所以可能导致某个线程永远都获取不到锁；
 - 可重入性：synchronized / ReentrantLock，如果一个线程已经获得了一个对象锁，此后该线程再请求进入被该对象锁的同步代码块时，由于该线程之前已经获取了这个对象锁，所以可以直接进入该锁的同步代码块；
 - 读写性：ReadWriteLock；
 
@@ -991,6 +999,8 @@ Lock 和 synchronized 的区别：
 - **效率**：如果有大量线程对同一个资源竞争很激烈，synchronized 的并发性能很大程度上会弱于 Lock；
 
 # 十二. Java 的代理
+
+见 [《设计模式篇》](./设计模式.md)。
 
 # 十三. 线程池的核心参数和基本原理？线程池的调优策略
 
