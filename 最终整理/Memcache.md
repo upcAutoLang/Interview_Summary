@@ -1,227 +1,4 @@
-# 一. Zookeeper 相关知识
-
-> [《Zookeeper面试题》](https://www.cnblogs.com/lanqiu5ge/p/9405601.html)  
-> [《随笔分类 - Zookeeper学习》](http://www.cnblogs.com/sunddenly/category/620563.html)
-
-## 1. ZooKeeper是什么？
-
-ZooKeeper 是一个分布式协调管理的服务，是集群的管理者。
-
-ZooKeeper 的特性：
-
-- 顺序一致性：即有序性，每次更新都会有一个时间戳信息，被称为 zxid，每次读请求都会包含 zxid 信息；
-- 原子性：一个更新操作要么全部服务器节点都完成，要么全都失败；
-- 单一视图：
-- 可靠性：ZooKeeper 的 Leader/Follower 机制，保证了 ZooKeeper 的稳定性；
-- 最终一致性：
-
-## 2. ZooKeeper 提供了什么？
-
-ZooKeeper 提供了**文件系统**和**通知机制**。文件系统即仿 Unix 文件系统结构的 ZNode 数据结构，通知机制即**<font color=red>？？？</font>**
-
-## 3. Zookeeper 文件系统
-
-ZK 文件系统的节点命名为 ZNode，与文件系统一样，树状多层级。与文件系统不同的是，文件系统只有叶子节点才有数据内容，而 ZNode 所有节点都可以有关联数据。只是 ZK 为了保证系统的实时性和可靠性，<font color=red>**每个节点的数据量很小，要求不能超过 1M**</font>。
-
-## 4. ZAB协议？
-
-ZooKeeper 的核心机制是原子传播机制。这个机制保证了各个服务器之间的同步。实现原子传播机制的协议称为 ZAB 协议。  
-ZAB 协议有两种模式，<font color=red>**恢复模式**</font>和<font color=red>**广播模式**</font>。
-
-- **恢复模式**：
-	- 发生条件如下：
-		- (1) ZooKeeper 集群刚刚重启；
-		- (2) 有 Leader 节点故障；
-		- (3) 超过半数的 Follower 无法与 Leader 正常通信（Follower 节点故障，或者网络问题），需要重新选举 Leader；
-	- 如果出现上述情况，集群则会开始选举新的节点作为集群 Leader。选举完毕后，Followers 会与 Leader 进行更新同步。当同步完成的 Followers 数量超过集群节点总数的一半后，恢复完毕，转入广播模式。
-- **广播模式**：恢复模式之外的模式，接受客户端请求，并进行事务请求处理。步骤如下：
-	1. 服务集群中任意一个节点 node 接受客户端的更新请求；
-	2. node 将消息传递给 Leader；
-	3. Leader 再向各个 Follower 进行提议 (Propose)；
-	4. Follower 收到 Propose 后，向 Leader 返回一个应答 ack；
-	5. Leader 收到半数以上 Follower 的 ack 后，将结果通知 (commit) 给各个 Follower，进行更新。
-
-## 5. 四种类型的数据节点 Znode
-
-四种节点类型：
-
-- **临时节点 (EPHEMERAL)**：客户端请求的临时节点。建立后客户端与 ZK 集群的会话失效（客户端与 ZK 连接断开，并不一定是会话失效），则会将该客户端创建的所有临时节点删除（当然包括该节点及下面的子节点）；
-- **永久节点 (PERSISTENT)**：一旦建立，除非手动删除，否则就会永久存在的节点。
-- **临时顺序节点 (EPHEMERAL SEQUENTIAL)**：与临时节点的生命周期相同，只是添加了一个顺序编号（自增整形数字），由父节点管理；
-- **永久顺序节点 (PERSISTENT SEQUENTIAL)**：与永久节点的生命周期相同，添加了一个由父节点管理的顺序编号（自增整形数字）。
-
-## 6. Zookeeper Watcher 机制 -- 数据变更通知
-
-ZooKeeper 的 Watcher 有三个步骤：
-
-1. 客户端注册 (Register) Watcher；
-2. 服务端处理 Watcher；
-3. 客户端回调 Watcher；
-
-ZooKeeper 的 Watcher 有特性如下：
-
-1. **一次性**：不管是客户端注册还是服务端处理，Watcher 回调只有一次。这样避免了某些 ZK 节点频繁的变更而带来的巨大网络开销。
-2. 客户端、服务端事件：
-	- 客户端：**getData**, **getChildren**, **exists**，几个方法都在 ZooKeeper.java 中；
-	- 服务端：**setData**, **create**, **delete**，几个方法都在 ZooKeeper.java 中。
-
-
-## 7. 客户端注册 Watcher 实现
-
-步骤如下：
-
-1. 客户端调用 getData / getChildren / exists 方法；
-2. 
-
-## 8. 服务端处理Watcher实现
-
-
-## 9. 客户端回调Watcher
-
-## 10. ACL权限控制机制
-
-UGO（User/Group/Others）
-ACL（Access Control List）访问控制列表
-
-## 11. Chroot特性
-## 12. 会话管理
-## 13. 服务器角色
-Leader
-Follower
-Observer
-## 14. Zookeeper 下 Server工作状态
-## 15. Leader 选举
-## 16. 数据同步
-直接差异化同步（DIFF同步）
-先回滚再差异化同步（TRUNC+DIFF同步）
-仅回滚同步（TRUNC同步）
-全量同步（SNAP同步）
-## 17. zookeeper是如何保证事务的顺序一致性的？
-## 18. 分布式集群中为什么会有Master？
-## 19. zk节点宕机如何处理？
-## 20. zookeeper负载均衡和nginx负载均衡区别
-## 21. Zookeeper有哪几种几种部署模式？
-## 22. 集群最少要几台机器，集群规则是怎样的?
-## 23. 集群支持动态添加机器吗？
-## 24. Zookeeper对节点的watch监听通知是永久的吗？为什么不是永久的?
-## 25. Zookeeper的java客户端都有哪些？
-## 26. chubby是什么，和zookeeper比你怎么看？
-## 27. 说几个zookeeper常用的命令。
-## 28. ZAB和Paxos算法的联系与区别？
-## 29. Zookeeper的典型应用场景
-1. 数据发布/订阅
-2. 负载均衡
-
-
-# 二. Kafka 相关知识点
-
-> [《Kafka面试题参考》](https://blog.csdn.net/linke1183982890/article/details/83303003)
-
-## 1. Kafka的设计是什么样的呢？
-
-Kafka将消息以topic为单位进行归纳
-将向Kafka topic发布消息的程序成为producers.
-将预订topics并消费消息的程序成为consumer.
-Kafka以集群的方式运行，可以由一个或多个服务组成，每个服务叫做一个broker.
-producers通过网络将消息发送到Kafka集群，集群向消费者提供消息
-
-## 2. 数据传输的事物定义有哪三种？
-
-数据传输的事务定义通常有以下三种级别：
-（1）最多一次: 消息不会被重复发送，最多被传输一次，但也有可能一次不传输
-（2）最少一次: 消息不会被漏发送，最少被传输一次，但也有可能被重复传输.
-（3）精确的一次（Exactly once）: 不会漏传输也不会重复传输,每个消息都传输被一次而且仅仅被传输一次，这是大家所期望的
-
-## 3. Kafka判断一个节点是否还活着有那两个条件？
-
-（1）节点必须可以维护和ZooKeeper的连接，Zookeeper通过心跳机制检查每个节点的连接
-（2）如果节点是个follower,他必须能及时的同步leader的写操作，延时不能太久
-
-## 4. producer是否直接将数据发送到broker的leader(主节点)？
-
-producer直接将数据发送到broker的leader(主节点)，不需要在多个节点进行分发，为了帮助producer做到这点，所有的Kafka节点都可以及时的告知:哪些节点是活动的，目标topic目标分区的leader在哪。这样producer就可以直接将消息发送到目的地了
-
-## 5. Kafka consumer是否可以消费指定分区消息？
-
-Kafa consumer消费消息时，向broker发出"fetch"请求去消费特定分区的消息，consumer指定消息在日志中的偏移量（offset），就可以消费从这个位置开始的消息，customer拥有了offset的控制权，可以向后回滚去重新消费之前的消息，这是很有意义的
-
-## 6. Kafka消息是采用Pull模式，还是Push模式？
-
-Kafka最初考虑的问题是，customer应该从brokes拉取消息还是brokers将消息推送到consumer，也就是pull还push。在这方面，Kafka遵循了一种大部分消息系统共同的传统的设计：producer将消息推送到broker，consumer从broker拉取消息
-
-一些消息系统比如Scribe和Apache Flume采用了push模式，将消息推送到下游的consumer。这样做有好处也有坏处：由broker决定消息推送的速率，对于不同消费速率的consumer就不太好处理了。消息系统都致力于让consumer以最大的速率最快速的消费消息，但不幸的是，push模式下，当broker推送的速率远大于consumer消费的速率时，consumer恐怕就要崩溃了。最终Kafka还是选取了传统的pull模式
-
-Pull模式的另外一个好处是consumer可以自主决定是否批量的从broker拉取数据。Push模式必须在不知道下游consumer消费能力和消费策略的情况下决定是立即推送每条消息还是缓存之后批量推送。如果为了避免consumer崩溃而采用较低的推送速率，将可能导致一次只推送较少的消息而造成浪费。Pull模式下，consumer就可以根据自己的消费能力去决定这些策略
-
-Pull有个缺点是，如果broker没有可供消费的消息，将导致consumer不断在循环中轮询，直到新消息到t达。为了避免这点，Kafka有个参数可以让consumer阻塞知道新消息到达(当然也可以阻塞知道消息的数量达到某个特定的量这样就可以批量发
-
-## 7. Kafka存储在硬盘上的消息格式是什么？
-
-消息由一个固定长度的头部和可变长度的字节数组组成。头部包含了一个版本号和CRC32校验码。
-
-- 消息长度: 4 bytes (value: 1+4+n)
-- 版本号: 1 byte
-- CRC校验码: 4 bytes
-- 具体的消息: n bytes
-
-## 8. Kafka高效文件存储设计特点：
-
-(1).Kafka把topic中一个parition大文件分成多个小文件段，通过多个小文件段，就容易定期清除或删除已经消费完文件，减少磁盘占用。
-(2).通过索引信息可以快速定位message和确定response的最大大小。
-(3).通过index元数据全部映射到memory，可以避免segment file的IO磁盘操作。
-(4).通过索引文件稀疏存储，可以大幅降低index文件元数据占用空间大小。
-
-## 9. Kafka 与传统消息系统之间有三个关键区别
-
-(1).Kafka 持久化日志，这些日志可以被重复读取和无限期保留
-(2).Kafka 是一个分布式系统：它以集群的方式运行，可以灵活伸缩，在内部通过复制数据提升容错能力和高可用性
-(3).Kafka 支持实时的流式处理
-
-## 10. Kafka创建Topic时如何将分区放置到不同的Broker中
-
-- 副本因子不能大于 Broker 的个数；
-- 第一个分区（编号为0）的第一个副本放置位置是随机从 brokerList 选择的；
-- 其他分区的第一个副本放置位置相对于第0个分区依次往后移。也就是如果我们有5个 Broker，5个分区，假设第一个分区放在第四个 Broker 上，那么第二个分区将会放在第五个 Broker 上；第三个分区将会放在第一个 Broker 上；第四个分区将会放在第二个 Broker 上，依次类推；
-- 剩余的副本相对于第一个副本放置位置其实是由 nextReplicaShift 决定的，而这个数也是随机产生的
-
-## 11. Kafka新建的分区会在哪个目录下创建
-
-在启动 Kafka 集群之前，我们需要配置好 log.dirs 参数，其值是 Kafka 数据的存放目录，这个参数可以配置多个目录，目录之间使用逗号分隔，通常这些目录是分布在不同的磁盘上用于提高读写性能。  
-当然我们也可以配置 log.dir 参数，含义一样。只需要设置其中一个即可。  
-如果 log.dirs 参数只配置了一个目录，那么分配到各个 Broker 上的分区肯定只能在这个目录下创建文件夹用于存放数据。  
-但是如果 log.dirs 参数配置了多个目录，那么 Kafka 会在哪个文件夹中创建分区目录呢？答案是：Kafka 会在含有分区目录最少的文件夹中创建新的分区目录，分区目录名为 Topic名+分区ID。注意，是分区文件夹总数最少的目录，而不是磁盘使用量最少的目录！也就是说，如果你给 log.dirs 参数新增了一个新的磁盘，新的分区目录肯定是先在这个新的磁盘上创建直到这个新的磁盘目录拥有的分区目录不是最少为止。
-
-## 12. partition的数据如何保存到硬盘
-topic中的多个partition以文件夹的形式保存到broker，每个分区序号从0递增，
-且消息有序
-Partition文件下有多个segment（xxx.index，xxx.log）
-segment 文件里的 大小和配置文件大小一致可以根据要求修改 默认为1g
-如果大小大于1g时，会滚动一个新的segment并且以上一个segment最后一条消息的偏移量命名
-
-## 13. kafka的ack机制
-request.required.acks有三个值 0 1 -1  
-0:生产者不会等待broker的ack，这个延迟最低但是存储的保证最弱当server挂掉的时候就会丢数据  
-1：服务端会等待ack值 leader副本确认接收到消息后发送ack但是如果leader挂掉后他不确保是否复制完成新leader也会导致数据丢失  
--1：同样在1的基础上 服务端会等所有的follower的副本受到数据后才会受到leader发出的ack，这样数据不会丢失
-
-## 14. Kafka的消费者如何消费数据
-消费者每次消费数据的时候，消费者都会记录消费的物理偏移量（offset）的位置  
-等到下次消费时，他会接着上次位置继续消费
-
-## 15. 消费者负载均衡策略
-一个消费者组中的一个分片对应一个消费者成员，他能保证每个消费者成员都能访问，如果组中成员太多会有空闲的成员
-
-## 16. 数据有序
-一个消费者组里它的内部是有序的
-消费者组与消费者组之间是无序的
-
-## 17. kafka生产数据时数据的分组策略
-生产者决定数据产生到集群的哪个partition中
-每一条消息都是以（key，value）格式
-Key是由生产者发送数据传入
-所以生产者（key）决定了数据产生到集群的哪个partition
-
-# 三. Memcache 相关问题
+# Memcache 相关问题
 
 > [《memcached面试题集锦》](https://blog.csdn.net/ywh147/article/details/47837955)
 
@@ -302,9 +79,11 @@ Client 1想把数据”barbaz”以key “foo”存储。Client 1首先参考节
 Memcached主要的cache机制是LRU（最近最少用）算法+超时失效。当您存数据到memcached中，可以指定该数据在缓存中可以呆多久Which is forever, or some time in the future。如果memcached的内存不够用了，过期的slabs会优先被替换，接着就轮到最老的未被使用的slabs。 
 
 ## 6. memcached如何实现冗余机制？ 
+
 不实现！我们对这个问题感到很惊讶。Memcached应该是应用的缓存层。它的设计本身就不带有任何冗余机制。如果一个memcached节点失去了所有数据，您应该可以从数据源（比如数据库）再次获取到数据。您应该特别注意，您的应用应该可以容忍节点的失效。不要写一些糟糕的查询代码，寄希望于 memcached来保证一切！如果您担心节点失效会大大加重数据库的负担，那么您可以采取一些办法。比如您可以增加更多的节点（来减少丢失一个节点的影响），热备节点（在其他节点down了的时候接管IP），等等。 
 
 ## 7. memcached如何处理容错的？ 
+
 不处理！:) 在memcached节点失效的情况下，集群没有必要做任何容错处理。如果发生了节点失效，应对的措施完全取决于用户。节点失效时，下面列出几种方案供您选择： 
 
 * 忽略它！ 在失效节点被恢复或替换之前，还有很多其他节点可以应对节点失效带来的影响。 
@@ -341,11 +120,13 @@ Steven Grimm，一如既往地,，在邮件列表中给出了另一个很好的�
 关于这些方法的细节，详见博客：http://dormando.livejournal.com/495593.html 。 
 
 ## 9. memcached是如何做身份验证的？ 
+
 没有身份认证机制！memcached是运行在应用下层的软件（身份验证应该是应用上层的职责）。memcached的客户端和服务器端之所以是轻量级的，部分原因就是完全没有实现身份验证机制。这样，memcached可以很快地创建新连接，服务器端也无需任何配置。 
 
 如果您希望限制访问，您可以使用防火墙，或者让memcached监听unix domain socket。 
 
 ## 10. memcached的多线程是什么？如何使用它们？ 
+
 线程就是定律（threads rule）！在Steven Grimm和Facebook的努力下，memcached 1.2及更高版本拥有了多线程模式。多线程模式允许memcached能够充分利用多个CPU，并在CPU之间共享所有的缓存数据。memcached使用一种简单的锁机制来保证数据更新操作的互斥。相比在同一个物理机器上运行多个memcached实例，这种方式能够更有效地处理multi gets。 
 
 如果您的系统负载并不重，也许您不需要启用多线程工作模式。如果您在运行一个拥有大规模硬件的、庞大的网站，您将会看到多线程的好处。 
@@ -355,15 +136,19 @@ Steven Grimm，一如既往地,，在邮件列表中给出了另一个很好的�
 简单地总结一下：命令解析（memcached在这里花了大部分时间）可以运行在多线程模式下。memcached内部对数据的操作是基于很多全局锁的（因此这部分工作不是多线程的）。未来对多线程模式的改进，将移除大量的全局锁，提高memcached在负载极高的场景下的性能。 
 
 ## 11. memcached能接受的key的最大长度是多少？ 
+
 key的最大长度是250个字符。需要注意的是，250是memcached服务器端内部的限制，如果您使用的客户端支持”key的前缀”或类似特性，那么key（前缀+原始key）的最大长度是可以超过250个字符的。我们推荐使用使用较短的key，因为可以节省内存和带宽。 
 
 ## 12. memcached对item的过期时间有什么限制？ 
+
 过期时间最大可以达到30天。memcached把传入的过期时间（时间段）解释成时间点后，一旦到了这个时间点，memcached就把item置为失效状态。这是一个简单但obscure的机制。 
 
 ## 13. memcached最大能存储多大的单个item？ 
+
 1MB。如果你的数据大于1MB，可以考虑在客户端压缩或拆分到多个key中。 
 
 ## 14. 为什么单个item的大小被限制在1M byte之内？ 
+
 啊…这是一个大家经常问的问题！ 
 
 简单的回答：因为内存分配器的算法就是这样的。 
@@ -379,6 +164,7 @@ slab中chunk越大，它和前面的slab之间的间隙就越大。因此，最�
 如果您确实需要存储大于1MB的数据，你可以修改slabs.c:POWER_BLOCK的值，然后重新编译memcached；或者使用低效的malloc/free。其他的建议包括数据库、MogileFS等。 
 
 ## 15. 我可以在不同的memcached节点上使用大小不等的缓存空间吗？这么做之后，memcached能够更有效地使用内存吗？ 
+
 Memcache客户端仅根据哈希算法来决定将某个key存储在哪个节点上，而不考虑节点的内存大小。因此，您可以在不同的节点上使用大小不等的缓存。但是一般都是这样做的：拥有较多内存的节点上可以运行多个memcached实例，每个实例使用的内存跟其他节点上的实例相同。 
 
 ## 16. 什么是二进制协议，我该关注吗？ 
@@ -402,6 +188,7 @@ slab分配器就是为了解决这个问题而生的。内存被分配并划分�
 更多信息：http://code.sixapart.com/svn/memcached/trunk/server/doc/memory_management.txt 。 
 
 ## 17. memcached是原子的吗？ 
+
 当然！好吧，让我们来明确一下： 
 所有的被发送到memcached的单个命令是完全原子的。如果您针对同一份数据同时发送了一个set命令和一个get命令，它们不会影响对方。它们将被串行化、先后执行。即使在多线程模式，所有的命令都是原子的，除非程序有bug:) 
 命令序列不是原子的。如果您通过get命令获取了一个item，修改了它，然后想把它set回memcached，我们不保证这个item没有被其他进程（process，未必是操作系统中的进程）操作过。在并发的情况下，您也可能覆写了一个被其他进程set的item。 
@@ -409,8 +196,4 @@ slab分配器就是为了解决这个问题而生的。内存被分配并划分�
 memcached 1.2.5以及更高版本，提供了gets和cas命令，它们可以解决上面的问题。如果您使用gets命令查询某个key的item，memcached会给您返回该item当前值的唯一标识。如果您覆写了这个item并想把它写回到memcached中，您可以通过cas命令把那个唯一标识一起发送给 memcached。如果该item存放在memcached中的唯一标识与您提供的一致，您的写操作将会成功。如果另一个进程在这期间也修改了这个 item，那么该item存放在memcached中的唯一标识将会改变，您的写操作就会失败。 
 
 通常，基于memcached中item的值来修改item，是一件棘手的事情。除非您很清楚自己在做什么，否则请不要做这样的事情。
-
-# 一. MQ 底层原理的实现
-
-# 二. 项目中用到的中间件 (Dubbo/MQ/Zookeeper/Redis/Kafka)
 

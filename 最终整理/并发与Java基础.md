@@ -35,6 +35,7 @@
 - 可见性：在线程 A 中修改主内存变量的值，其他线程也会立即获得该变量的新值；volatile 与 synchronized 都保证可见性；
 	- volatile 依靠其特性，在线程中修改值后，会立即向主内存中进行赋值，实现其可见性；
 	- synchronized 依靠 lock 的特性，用 synchronized 修饰的方法，字节码上都处于 moniterenter 与 moniterexit 之间，这部分字节码会严格按照顺序执行；
+	- volatile关键字主要用于解决变量在多个线程之间的可见性，而 synchronized关键字解决的是多个线程之间访问资源的同步性。
 - 有序性：保证代码的顺序执行；
 	- volatile 的自身特性：禁止指令的重排列；
 	- synchronized 依旧依靠 lock 的特性；
@@ -433,7 +434,11 @@ TERMINATED 状态标志着一个线程的结束，处于 TERMINATED 状态的线
 
 # 七. Java中nio和io的区别？常用的类有哪些？
 
-# 八. Java里面的同步锁了解吗？ CountDownLaunch和Cylicbarrior的区别，分别在什么场景下使用？
+# 八. AQS 原理
+
+
+
+# 九. Java里面 的同步锁了解吗？ CountDownLaunch和Cylicbarrior的区别，分别在什么场景下使用？
 
 在java 1.5中，提供了一些非常有用的辅助类来帮助我们进行并发编程，比如CountDownLatch，CyclicBarrier和Semaphore，今天我们就来学习一下这三个辅助类的用法。
 
@@ -925,7 +930,7 @@ public class Test {
 	- 另外，CountDownLatch是不能够重用的，而CyclicBarrier是可以重用的。
 2. Semaphore其实和锁有点类似，它一般用于控制对某组资源的访问权限。
 
-# 九. 如何实现一个线程池？
+# 
 
 # 十. Java 的锁有哪些？可重入锁和不可重入锁的区别？
 
