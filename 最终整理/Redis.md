@@ -1,4 +1,16 @@
-# 一. Redis和Setnx命令使如何实现分布式锁的？使用Redis怎么进行异步队列？会有什么缺点？
+# 一. Redis 分布式锁与延时队列
+
+## 1. Redis 的分布式锁
+
+先拿**setnx**来争抢锁，抢到之后，再用**expire**给锁加一个过期时间防止锁忘记了释放。  
+
+这时候对方会告诉你说你回答得不错，然后接着问如果在setnx之后执行expire之前进程意外crash或者要重启维护了，那会怎么样？  
+
+set指令有非常复杂的参数，这个应该是可以同时把**setnx**和**expire**合成一条指令来用的。
+
+## 2. Redis 的延时队列
+
+使用 sortedset，拿时间戳作为 score，消息内容作为 key 调用 zadd 来生产消息，消费者用 **zrangebyscore** 指令获取N秒之前的数据轮询进行处理。
 
 # 二. 如何实现session共享？用Redis该如何实现？
 
@@ -196,31 +208,320 @@ ok，如果发生上述情况，确实是会发生脏数据。
 
 # 五. Redis 的数据结构
 
-## 5.1 sds
+> 参考地址：[《【Redis】redis各类型数据存储分析》](https://www.cnblogs.com/weknow619/p/10464139.html)
 
-## 5.2 hash
+## 1. 底层数据结构
 
-## 5.3 压缩列表 ziplist
+Redis 常用的数据类型主要有：String, List, Hash, Set, ZSet 五种，它们分别对应的底层数据结构有：
 
-## 5.4 快速列表 quicklist
+- **String**: sds
+- **List**: quicklist (linkedlist + ziplist)
+- **Hash**: ziplist 或 hashtable
+- **Set**: intset 或 hashtable
+- **ZSet**: ziplist 或 skiplist
 
-## 5.5 跳跃列表 zskiplist
+## 2. redisObject
+
+redisObject 对象非常重要，Redis 对象的**类型、内部编码、内存回收、共享对象**等功能，都需要 redisObject 支持。这样设计的好处是，可以针对不同的使用场景，对五种常用类型设置多种不同的数据结构实现，从而优化对象在不同场景下的使用效率。
+
+例如当我们执行set hello world命令时，会有以下数据模型：
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095551839-1295247166.png)
+
+**dictEntry**：Redis 给每个 key-value 键值对分配一个 dictEntry，里面有着 key 和 val 的指针，next 指向下一个 dictEntry 形成链表，这个指针可以将多个哈希值相同的键值对链接在一起，由此来解决哈希冲突问题(链地址法)。
+
+**sds**：键 key **“hello”** 是以 SDS（简单动态字符串）存储，后面详细介绍。
+
+**redisObject**：值val **“world”** 存储在 redisObject 的 ptr 中。实际上，**redis 常用五种类型都是以 redisObject 来存储的**；而 redisObject 中的 type 字段指明了 Value 对象的类型，ptr 字段则指向对象所在的地址。
+
+> 注：无论是 dictEntry 对象，还是 redisObject、SDS 对象，都需要内存分配器（如jemalloc）分配内存进行存储。jemalloc作为Redis的默认内存分配器，在减小内存碎片方面做的相对比较好。比如jemalloc在64位系统中，将内存空间划分为小、大、巨大三个范围；每个范围内又划分了许多小的内存块单位；当Redis存储数据时，会选择大小最合适的内存块进行存储。
+
+前面说过，Redis 每个对象由一个 redisObject 结构表示，它的 ptr 指针指向底层实现的数据结构，而**数据结构由 encoding 属性决定**。比如我们执行以下命令得到存储“hello”对应的编码：
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095630848-129556438.png)
+
+redis所有的数据结构类型如下：
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095645664-118641258.png)
+
+## 3. sds
+
+```c
+struct sdshdr {
+    // buf 中已占用空间的长度
+    int len;
+    // buf 中剩余可用空间的长度
+    int free;
+    // 数据空间
+    char buf[]; // ’\0’空字符结尾
+};
+```
+
+### (1) sds 编码
+
+字符串对象的底层实现可以是int、raw、embstr（上面的表对应有名称介绍）。
+
+> embstr编码是通过调用一次内存分配函数来分配一块连续的空间，而raw需要调用两次。
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095701626-213641310.png)
+
+int 编码字符串和 embstr 编码字符串在一定条件下会转化为 raw 编码字符串。
+
+- **embstr**：<= 39 字节；
+- **int**：8个字节的长整型；
+- **raw**：> 39 个字节的字符串
+
+### (2) 空间分配
+
+如果对一个SDS进行修改，分为一下两种情况：
+
+1. **长度小于1MB**：程序将分配和 len 属性同样大小的未使用空间，这时free和len属性值相同。
+   - 举个例子，SDS的len将变成15字节，则程序也会分配15字节的未使用空间，SDS的buf数组的实际长度变成15+15+1=31字节（额外一个字节用户保存空字符）
+2. **长度大于等于1MB**：程序会分配 1MB 的未使用空间；
+   - 比如进行修改之后，SDS的len变成30MB，那么它的实际长度是30MB+1MB+1byte。
+
+## 4. hashtable
+
+hashtable 又名字典，是 Redis 中应用十分广泛的数据结构。除了基础数据结构 Hash, Set 之外，Redis 的全局字典，过期时间的 Key 集合，ZSet 中 value 与 score 的映射，都是基于 hashtable 完成的。
+
+### (1) Hashtable 源码
+
+Hashtable 可以简化成如下结构：
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303100153771-48618251.png)可以看出，HashTable 与 Java 1.7 中的 HashMap 实现原理基本相同。代码如下：
+
+```c
+typedef struct dict {
+    // 类型特定函数
+    dictType *type;
+     // 私有数据
+    void *privdata;
+     // 哈希表
+    dictht ht[2];
+    // rehash 索引
+    // 当 rehash 不在进行时，值为 -1
+    int rehashidx; /* rehashing not in progress if rehashidx == -1 */
+     // 目前正在运行的安全迭代器的数量
+    int iterators; /* number of iterators currently running */
+ } dict;
+```
+
+```c
+typedef struct dictht {
+    // 哈希表数组
+    dictEntry **table;
+     // 哈希表大小
+    unsigned long size;
+    // 哈希表大小掩码，用于计算索引值
+    // 总是等于 size - 1
+    unsigned long sizemask;
+    // 该哈希表已有节点的数量
+    unsigned long used;
+} dictht;
+```
+
+```c
+typedef struct dictEntry {
+    void *key;
+    union {void *val;uint64_t u64;int64_t s64;} v;
+    // 指向下个哈希表节点，形成链表
+    struct dictEntry *next;
+ } dictEntry;
+```
+
+在 **dict** 的定义中，可以看出有两个 dictht 字典对象。每个字典会带有两个哈希表，一个平时使用，另一个仅在rehash（重新散列）时使用。随着对哈希表的操作，键会逐渐增多或减少。为了让哈希表的负载因子维持在一个合理范围内，Redis会对哈希表的大小进行**扩展或收缩（rehash）**。只有在扩展与收缩时，ht[0] 里面所有的键值对会多次、渐进式的 rehash 到 ht[1] 里。
+
+### (2) Hash 的 Hashtable
+
+Hash 可以使用 Hashtable 或者 ziplist 结构来实现。Hash对象只有同时满足下面两个条件时，才会使用ziplist（压缩列表）：
+
+1. Hash 中元素数量小于 512 个；
+2. Hash 中所有键值对的键和值字符串长度都小于 64 字节。
+
+### (3) Set 的 Hashtable
+
+较大数量的 Set 同样也是 HashTable ，但实现的时候 value 全部置为 NULL。
+
+## 5. 压缩列表 ziplist
+
+当一个列表键只包含少量列表项，且是小整数值或长度比较短的字符串时，那么redis就使用ziplist（压缩列表）来做列表键的底层实现。
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095934916-1182103524.png)
+
+**ziplist是Redis为了节约内存而开发的**，是由一系列特殊编码的连续内存块(而不是像双端链表一样每个节点是指针)组成的顺序型数据结构；具体结构相对比较复杂，有兴趣读者可以看Redis 哈希结构内存模型剖析。
+
+## 6. 双端链表 linkedlist
+
+Redis 的 List 结构就是 linkedList 与 ziplist 结合而成的。LinkedList 结构比较像 Java 的 LinkedList，源码如下：
+
+```c
+typedef struct listNode {
+     // 前置节点
+    struct listNode *prev;
+    // 后置节点
+    struct listNode *next;
+    // 节点的值
+    void *value;
+ } listNode;
+
+ typedef struct list {
+     // 表头节点
+    listNode *head;
+    // 表尾节点
+    listNode *tail;
+    // 节点值复制函数
+    void *(*dup)(void *ptr);
+    // 节点值释放函数
+    void (*free)(void *ptr);
+     // 节点值对比函数
+    int (*match)(void *ptr, void *key);
+     // 链表所包含的节点数量
+    unsigned long len;
+ } list;
+```
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095859138-1854838056.png)
+
+从图中可以看出 Redis 的 linkedlist 双端链表有以下特性：
+
+- 节点 (ListNode) 带有 prev, next 指针；
+
+- 列表 (List) 有 head 指针和 tail 指针；
+
+
+所以获取前置节点、后置节点、表头节点和表尾节点的复杂度都是 O(1)。len属性获取节点数量也为O(1)。
+
+与双端链表相比，压缩列表可以节省内存空间，但是进行修改或增删操作时，复杂度较高；因此当节点数量较少时，可以使用压缩列表；但是节点数量多时，还是使用双端链表划算。
+
+
+
+## 7. 快速列表 quicklist
+
+![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303100045671-69086709.png)
+
+List 对象的底层实现是 quicklist（快速列表，是 ziplist 压缩列表 和 linkedlist 双端链表的组合）。Redis 中的列表支持两端插入和弹出，并可以获得指定位置（或范围）的元素，可以充当数组、队列、栈等。
+
+quicklist 将 linkedList 按段切分，每一段使用 zipList 来紧凑存储，多个 zipList 之间使用双向指针串接起来。因为链表的附加空间相对太高，prev 和 next 指针就要占去 16 个字节 (64bit 系统的指针是 8 个字节)，另外每个节点的内存都是单独分配，会加剧内存的碎片化，影响内存管理效率。
+
+quicklist 默认的压缩深度是 0，也就是不压缩。为了支持快速的 push/pop 操作，quicklist 的首尾两个 ziplist 不压缩，此时深度就是 1。为了进一步节约空间，Redis 还会对 ziplist 进行压缩存储，使用 LZF 算法压缩。
+
+> 注：通常每个 ziplist 的长度为 8KB，该长度可以通过配置文件进行配置。
+
+## 8. 跳跃列表 zskiplist
+
+> 参考地址：  
+>
+> [《漫画：什么是跳跃表？》](https://www.jianshu.com/p/ac351674d8eb?utm_campaign=maleskine&utm_content=note&utm_medium=seo_notes&utm_source=recommendation)
+>
+> [《Redis内部数据结构详解之跳跃表(skiplist)》](https://blog.csdn.net/Acceptedxukai/article/details/17333673)
+
+### (1) 跳跃列表基础说明
+
+跳跃表是一种随机化数据结构，基于并联的链表，其效率可以比拟平衡二叉树，查找、删除、插入等操作都可以在对数期望时间内完成，对比平衡树，跳跃表的实现要简单直观很多。
+
+以下是一个跳跃表的例图(来自维基百科)：
+
+![img](http://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Skip_list.svg/470px-Skip_list.svg.png)
+
+从图中可以看出跳跃表主要有以下几个部分构成：
+
+1. **表头 head**：负责维护跳跃表的节点指针；
+2. **节点 node**：实际保存元素值，每个节点有一层或多层；
+3. **层 level**：保存着指向该层下一个节点的指针；
+4. **表尾 tail**：全部由 null 组成；
+
+跳跃表的遍历总是从高层开始，然后随着元素值范围的缩小，慢慢降低到低层。
+
+### (2) 跳跃列表的基本操作
+
+- **查询**<font color=red>**O(logN)**</font>：在跳跃列表上的操作，就是从高层向低层的**逐层比较、定位**，然后进行查询、插入、删除的过程。
+
+- **插入**<font color=red>**O(logN)**</font>：
+  1. 用查询的方法找到待插入位置；<font color=red>**O(logN)**</font>
+  2. 然后在最底层链表上执行链表的插入操作；<font color=red>**O(1)**</font>
+  3. **概率升级**：在最底层有 50% 的概率进行升级；如果升级成功后，倒数第二层插入该节点，同时又有了 50% 概率插入到上一层节点…… 如此每次向上升级都有 50% 的概率，直到触发 50% 不升级概率；<font color=red>**O(logN)**</font>
+- **删除**<font color=red>**O(logN)**</font>：
+  1. 用查询的方法找到待插入位置；自上而下，查找第一次出现节点的索引，并逐层找到每一层对应的节点;<font color=red>**O(logN)**</font>
+  2. 除每一层查找到的节点，如果该层只剩下1个节点，删除整个一层（原链表除外）；<font color=red>**O(1)**</font>
+
+跳跃表保持平衡使用的是【随机抛硬币】的方法。因为跳跃表删除和添加的节点是不可预测的，很难用一种有效算法保证跳表索引分布始终是均匀的。随机抛硬币的方法虽然不能保证所以的绝对均匀分布，但是随着数据量的增大，该算法可以使跳跳结构大体趋于均匀。
+
+### (3) Redis 跳跃表的修改
+
+Redis 作者为了适合自己功能的需要，对原来的跳跃表进行了一下修改：
+
+1. 允许重复的 score 值：多个不同的元素 (member) 的 score 值可以相同；
+
+2. 进行元素对比的时候，不仅要检查 score 值，还需要检查 member：当 score 值相等时，需要比较 member 域进行比较；
+
+3. 结构保存一个 tail 指针：跳跃表的表尾指针；
+
+4. 每个节点都有一个高度为 1 层的前驱指针，用于从底层表尾向表头方向遍历；
+
 
 # 六. Redis 线程模型
 
 # 七. Redis 的数据淘汰机制
+
+## 1. Redis 的数据淘汰策略
+
+当 Redis **内存超出物理内存限制**时，为了保持高效的可用性，Redis 需要对内存中部分数据进行淘汰。Redis 早起版本使用的数据淘汰策略是 LRU (Least Recently Used，最近最少使用) 策略，LRU 策略是基于最近访问时间进行排序、淘汰的。后来加入了 LFU (Least Frequency Used，最近最低频率) 策略。  
+Redis 主要使用的还是 LRU 策略。
+
+- **noeviction**: 可以继续读请求，不可以进行写请求。
+  - 返回错误当内存限制达到并且客户端尝试执行会让更多内存被使用的命令（大部分的写入指令，但 DEL 和几个例外）；
+  - 默认淘汰策略。
+- **volatile-lru**: 尝试回收最少使用的键（LRU），但仅限于在**设置了过期时间**的键，使得新添加的数据有空间存放。
+- **volatile-random**: 回收**随机的键**使得新添加的数据有空间存放，但仅限于在**设置了过期时间的键**。
+- **volatile-ttl**: 回收设置了过期时间的键，淘汰策略是**优先回收剩余时间 (TTL) 较短的键**，使得新添加的数据有空间存放。
+- **allkeys-lru**: 对全部集合进行回收，尝试回收最少使用的键 (LRU)，使得新添加的数据有空间存放。
+- **allkeys-random**: 对全部集合进行回收，回收随机的键使得新添加的数据有空间存放。
+- **volatile-lfu**: 对设置了过期时间的键进行 LFU 策略的过期筛选；
+- **allkeys-lfu**: 对全部的键进行 LFU 策略的过期筛选；
+
+## 2. LRU 策略
+
+Redis 的数据都是由 key-value 形式构成的，在实现 LRU 的内存淘汰机制时，除了 key-value，LRU 还需要维护一个列表，链表尾部的数据是最少被访问的数据。列表按照最近访问时间进行排序。当内存达到物理内存限制触发 LRU 回收时，对链表尾部的 k-v 进行回收。
+
+但 Redis 的 LRU 并不是这样执行的，Redis 使用了一种近似 LRU 算法。对于所有 Redis 对象，对象头中包含一个 24bit 的信息，作为**对象热度**的标志。在 LRU 淘汰算法中，该标志是一个**时间戳**，记录了最近一次访问该标志位的时间。  
+在触发了 LRU 淘汰时，Redis 会随机抽取若干个（默认是 5 个）key，然后删掉最旧的 key。如果这时候内存依旧超出限制，则再次抽选、删除最旧的 Key 值，直到内存低于最大内存限制为止。
+
+Redis Object 的对象头如下所示：
+
+```c
+typedef struct redisObject {
+    // 对象类型，如 zset, set, hash 等
+    unsigned type: 4; 
+    // 对象编码如 ziplist, inset, skiplist 等
+    unsigned encoding: 4;
+    // 对象的热度
+    unsigned lru: 24;
+    // 引用计数
+    int refcount;
+    // 对象的 body
+    void *ptr;
+}
+```
+
+其中，lru 值即为表示热度的值。在 LRU 模式下，该字段存储的时间戳是 Redis 服务器的时钟信息 server.lruclock，单位为毫秒。server.lruclock 持续更新，某对象被访问时，对象头中的 LRU 值被更新为当前 server.lruclock 的值，最后当触发 LRU 内存淘汰时，该对象的 LRU 值会与当前 server.lruclock 进行取模等一系列运算，即可得到 LRU 值。
+
+## 3. LFU 策略
+
+LFU 策略与 LRU 的计算方式大致相同，都是根据 Redis 对象头的 LRU 值与 server.lruclock 值进行计算的。但是 LFU 策略下，24bit 的 lru 值被分为 16+8 两部分。
+
+- **ldt (last decrement time，)**: 前 16 位，记录上一次更新时间，计算单位是分钟。
+  - ldt 不是对象被访问的时候被更新，而是在 Redis 触发淘汰逻辑时进行更新；
+- **logc (logistic counter，对数计数)**: 后 8 位记录频率信息，且以**对数形式**储存，计算单位是分钟。
+  - logc 有**衰减算法**，在 ldt 更新时触发。当前 logc 值减去对象空闲时间，除以一个衰减系数；
+  - 由于 logc 的统计的是对数信息，所以它的 +1 策略是基于概率的 +1；于是当对数值越大时，+1 操作概率越小，就越难被更新。大致流程如下：
+    1. 计算差值：<code>当前对数值 - 基值 (5)</code>；
+    2. 计算更新 +1 操作概率：<code>p = 1 / 差值</code>；
 
 # 八. 当前读和快照读
 
 # 九. Redis
 
 ## 1. Redis 管道
-
-
-
-## 2. Redis 内部结构
-
-### 
 
 ## 3. 聊聊 Redis 使用场景
 
@@ -373,77 +674,9 @@ LT, ET这件事怎么做到的呢？当一个socket句柄上有事件时，内�
 
 ## 10. 使用缓存的合理性问题
 
-## 11. Redis 的回收
-
-### 11(1) Redis 的数据淘汰策略
-
-当 Redis **内存超出物理内存限制**时，为了保持高效的可用性，Redis 需要对内存中部分数据进行淘汰。Redis 早起版本使用的数据淘汰策略是 LRU (Least Recently Used，最近最少使用) 策略，LRU 策略是基于最近访问时间进行排序、淘汰的。后来加入了 LFU (Least Frequency Used，最近最低频率) 策略。  
-Redis 主要使用的还是 LRU 策略。
-
-- **noeviction**: 可以继续读请求，不可以进行写请求。
-	- 返回错误当内存限制达到并且客户端尝试执行会让更多内存被使用的命令（大部分的写入指令，但 DEL 和几个例外）；
-	- 默认淘汰策略。
-- **volatile-lru**: 尝试回收最少使用的键（LRU），但仅限于在**设置了过期时间**的键，使得新添加的数据有空间存放。
-- **volatile-random**: 回收**随机的键**使得新添加的数据有空间存放，但仅限于在**设置了过期时间的键**。
-- **volatile-ttl**: 回收设置了过期时间的键，淘汰策略是**优先回收剩余时间 (TTL) 较短的键**，使得新添加的数据有空间存放。
-- **allkeys-lru**: 对全部集合进行回收，尝试回收最少使用的键 (LRU)，使得新添加的数据有空间存放。
-- **allkeys-random**: 对全部集合进行回收，回收随机的键使得新添加的数据有空间存放。
-- **volatile-lfu**: 对设置了过期时间的键进行 LFU 策略的过期筛选；
-- **allkeys-lfu**: 对全部的键进行 LFU 策略的过期筛选；
-
-### 11(2) LRU 策略
-
-Redis 的数据都是由 key-value 形式构成的，在实现 LRU 的内存淘汰机制时，除了 key-value，LRU 还需要维护一个列表，链表尾部的数据是最少被访问的数据。列表按照最近访问时间进行排序。当内存达到物理内存限制触发 LRU 回收时，对链表尾部的 k-v 进行回收。
-
-但 Redis 的 LRU 并不是这样执行的，Redis 使用了一种近似 LRU 算法。对于所有 Redis 对象，对象头中包含一个 24bit 的信息，作为**对象热度**的标志。在 LRU 淘汰算法中，该标志是一个**时间戳**，记录了最近一次访问该标志位的时间。  
-在触发了 LRU 淘汰时，Redis 会随机抽取若干个（默认是 5 个）key，然后删掉最旧的 key。如果这时候内存依旧超出限制，则再次抽选、删除最旧的 Key 值，直到内存低于最大内存限制为止。
-
-Redis Object 的对象头如下所示：
-
-```c
-typedef struct redisObject {
-    // 对象类型，如 zset, set, hash 等
-    unsigned type: 4; 
-    // 对象编码如 ziplist, inset, skiplist 等
-    unsigned encoding: 4;
-    // 对象的热度
-    unsigned lru: 24;
-    // 引用计数
-    int refcount;
-    // 对象的 body
-    void *ptr;
-}
-```
-
-其中，lru 值即为表示热度的值。在 LRU 模式下，该字段存储的时间戳是 Redis 服务器的时钟信息 server.lruclock，单位为毫秒。server.lruclock 持续更新，某对象被访问时，对象头中的 LRU 值被更新为当前 server.lruclock 的值，最后当触发 LRU 内存淘汰时，该对象的 LRU 值会与当前 server.lruclock 进行取模等一系列运算，即可得到 LRU 值。
-
-### 11(3) LFU 策略
-
-LFU 策略与 LRU 的计算方式大致相同，都是根据 Redis 对象头的 LRU 值与 server.lruclock 值进行计算的。但是 LFU 策略下，24bit 的 lru 值被分为 16+8 两部分。
-
-- **ldt (last decrement time，)**: 前 16 位，记录上一次更新时间，计算单位是分钟。
-	- ldt 不是对象被访问的时候被更新，而是在 Redis 触发淘汰逻辑时进行更新；
-- **logc (logistic counter，对数计数)**: 后 8 位记录频率信息，且以**对数形式**储存，计算单位是分钟。
-	- logc 有**衰减算法**，在 ldt 更新时触发。当前 logc 值减去对象空闲时间，除以一个衰减系数；
-	- 由于 logc 的统计的是对数信息，所以它的 +1 策略是基于概率的 +1；于是当对数值越大时，+1 操作概率越小，就越难被更新。大致流程如下：
-		1. 计算差值：<code>当前对数值 - 基值 (5)</code>；
-		2. 计算更新 +1 操作概率：<code>p = 1 / 差值</code>；
-
 ## 12. Redis 的 BloomFilter
 
 > [《Redis-避免缓存穿透的利器之BloomFilter》](https://juejin.im/post/5db69365518825645656c0de)
-
-
-
-
-
-## 13. Redis 分布式锁
-
-先拿**setnx**来争抢锁，抢到之后，再用**expire**给锁加一个过期时间防止锁忘记了释放。  
-
-这时候对方会告诉你说你回答得不错，然后接着问如果在setnx之后执行expire之前进程意外crash或者要重启维护了，那会怎么样？  
-
-set指令有非常复杂的参数，这个应该是可以同时把**setnx**和**expire**合成一条指令来用的。
 
 ## 14. Redis 大量 Key 值
 
@@ -456,10 +689,6 @@ set指令有非常复杂的参数，这个应该是可以同时把**setnx**和**
 这个时候你要回答Redis关键的一个特性：Redis的单线程的。keys指令会导致线程阻塞一段时间，线上服务会停顿，直到指令执行完毕，服务才能恢复。这个时候可以使用**scan**指令，**scan**指令可以无阻塞的提取出指定模式的key列表，但是会有一定的重复概率，在客户端做一次去重就可以了，但是整体所花费的时间会比直接用keys指令长。
 
 **不过，增量式迭代命令也不是没有缺点的： 举个例子， 使用 SMEMBERS 命令可以返回集合键当前包含的所有元素， 但是对于 SCAN 这类增量式迭代命令来说， 因为在对键进行增量式迭代的过程中， 键可能会被修改， 所以增量式迭代命令只能对被返回的元素提供有限的保证 。**
-
-## 15. Redis 如何实现延时队列
-
-使用sortedset，拿时间戳作为score，消息内容作为key调用zadd来生产消息，消费者用**zrangebyscore**指令获取N秒之前的数据轮询进行处理。
 
 ## 16. Redis 的同步机制
 
