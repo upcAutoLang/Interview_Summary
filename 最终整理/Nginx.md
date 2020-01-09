@@ -116,11 +116,17 @@ Nginx是一个高性能的HTTP和反向代理服务器，及电子邮件（IMAP/
 > [《一分钟了解四层/七层反向代理》](https://blog.csdn.net/wufaliang003/article/details/78395941)  
 > [《nginx四层和七层负载均衡的区别》](https://blog.csdn.net/friends99/article/details/79803638)
 
+四层/七层负载均衡的模型是来自于 **OSI 七层模型**。
 
+<img src="./pic/OSI七层模型.jpeg" alt="OSI七层模型" style="zoom:75%;" />
 
+由图看出，四层指**传输层**，通过**<font color=red>用户 IP + port</font>** 的方式接收请求，然后再分配到真实的服务器。七层指**应用层**，通过虚拟的 URL、主机名等**<font color=red>HTTP 协议的属性</font>**接收请求，然后分配到真实的服务器。  
+负载均衡器通常被称为**四层交换机**或**七层交换机**。
 
+- 四层负载均衡在 OSI 第四层，即 TCP 层工作。这种负载均衡不能理解如 HTTP, FTP, MySQL 之类的应用协议；
+- 七层负载均衡在 OSI 第七层，即应用层。这种负载均衡可以理解应用协议。
 
-
+同时也有二、三层的负载均衡。二层负载均衡在数据链路层，根据 **<font color=red>MAC 地址</font>**完成数据交换，会通过一个虚拟的 MAC 地址接受请求，然后分配到真实的 MAC 地址。三层负载均衡在网络层，根据 **<font color=red>IP 地址</font>**完成数据交换，通过一个虚拟的 IP 地址接收请求，然后分配到真实的 IP 地址。但没有中间五六的几层，因为 OSI 应用层、表示层、会话层已经合并到了 TCP/IP 的应用层了。
 
 3、nginx和apache的区别？
 1）轻量级，同样起web 服务，比apache 占用更少的内存及资源 

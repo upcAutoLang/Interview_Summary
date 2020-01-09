@@ -189,7 +189,100 @@ Key是由生产者发送数据传入
 	- 这种做法相当于**<font color=red>临时将队列资源、消费者资源扩大十倍</font>**，以十倍的速度来消费数据；
 5. 快速消费完积压的数据之后，恢复原先的架构，重新用修复后的原 consumer 机器来消费消息。
 
+## 十八. 消息中间件的高可用性
 
+实现高可用性的方式一般都是**进行 replication**。对于 kafka，如果没有提供高可用性机制，一旦一个或多个 Broker 宕机，则宕机期间其上所有 Partition 都无法继续提供服务。若该 Broker永远不能再恢复，那么所有的数据也就将丢失，这是不可容忍的。所以 kafka 高可用性的设计也是进行 Replication。  
+**Replica 的分布**：为了尽量做好负载均衡和容错能力，需要将同一个 Partition 的 Replica 尽量分散到不同的机器。  
+**Replica 的同步**：当有很多 Replica 的时候，一般来说，对于这种情况有两个处理方法：
+
+- **同步复制**：当 producer 向所有的 Replica 写入成功消息后才返回。一致性得到保障，但是延迟太高，吞吐率降低。
+- **异步复制**：所有的 Replica 选取一个一个 leader，producer 向 leader 写入成功即返回（即生产者参数 acks = 1）。leader 负责将消息同步给其他的所有 Replica。但是消息同步一致性得不到保证，但是保证了快速的响应。
+
+而 kafka 选取了一个折中的方式：**ISR (in-sync replicas)**。producer 每次发送消息，将消息发送给 leader，leader 将消息同步给他“信任”的“小弟们”就算成功，巧妙的均衡了确保数据不丢失以及吞吐率。具体步骤：
+
+1. 在所有的 Replica 中，**leader 会维护一个与其基本保持同步的 Replica 列表**，该列表称为**ISR (in-sync Replica)**；每个 Partition 都会有一个 ISR，而且是由 leader 动态维护。
+2. 如果一个 replica 落后 leader 太多，leader 会将其剔除。如果另外的 replica 跟上脚步，leader 会将其加入。
+3. **同步**：leader 向 ISR 中的所有 replica 同步消息，当收到所有 ISR 中 replica 的 ack 之后，leader 才 commit。
+4. **异步**：收到同步消息的 ISR 中的 replica，异步将消息同步给 ISR 集合外的 replica。
+
+
+## 十九. 避免消息中间件故障后引发系统整体故障
+
+如果所有的 replica 都不工作了，有两种解决方式：
+
+1. 等待 ISR 中任一个 Replica 恢复，并选取他为 leader；
+	- 等待时间较长，降低了可用性；若 ISR 中的所有 Replica 都无法恢复或者数据丢失，则该 partition 将永不可用
+2. 选择第一个回复的 Replica 为新的 leader，无论他是否在 ISR 中；
+	- 所选 leader 可能并未包含已被之前 leader commit 的消息，因此会造成数据丢失；
+	- 可用性较高；
+
+## 二十. Kafka 消息投递
+
+> 参考地址：[《Kafka消息投递语义-消息不丢失，不重复，不丢不重》](https://www.cnblogs.com/3gods/p/7530828.html)
+
+- **问题 1**：使用 Kafka 的时候，你们怎么保证投递出去的消息一定不会丢失？
+- **问题 2**：你们怎么保证投递出去的消息只有一条且仅仅一条，不会出现重复的数据？
+
+### 20.1 Kafka 消息投递语义
+
+kafka 有三种消息投递语义：
+
+- **At most Once**：最多一次；消息不会重复，但可能丢失；
+- **At least Once**：最少一次；消息不会丢失，但可能重复；
+- <font color=red>**Exactly Once**</font>：最佳情况，只且消费一次；消息不会重复，也不会丢失；
+
+整体的消息投递语义由**生产者、消费者**两端同时保证。
+
+#### 20.1.1 Producer 生产者端
+
+Producer 端保证消息投递重复性，是通过 **Producer 的 <font color=red>acks</font> 参数**与 **Broker 端的 <font color=red>min.insync.replicas</font> 参数**决定的。  
+
+Producer 端的 **acks 参数**值信息如下：
+
+- **acks = 0**：不等待任何响应的发送消息；
+- **acks = 1**：**leader 分片写消息成功**，就返回响应给生产者；
+- <font color=red>**acks = -1(all)**</font>：要求 ISR 集合至少两个 Replica，而且必须全部 Replica 都写入成功，才返回响应给 Producer；
+	- 无论 ISR 少于两个 Replica，或者不是全部 Replica 写入成功，都会抛出异常；
+
+前面 Producer 的 acks = 1 可以保证写入 Leader 副本，对大部分情况没有问题。但如果刚刚一条消息写入 Leader，还没有把这条消息同步给其他 Replica，Leader 就挂了，那么这条消息也就丢失了。所以如果保证消息的完全投递，还是需要令 acks = all；
+
+#### 20.1.2 Broker 节点端
+
+首先上面说到，为了配合 Producer acks 参数为 all，需要令 Broker 端参数 min.insync.replicas = 2；  
+min.insync.replicas 参数是用来配合 Producer acks 参数的。因为如果 acks 设置为 all，但某个 Topic 只有 leader 一个 Replica（或者某个 Kafka 集群中由于同步很慢，导致所有 follower 全部被剔除 ISR 集合），这样 acks = -1 就演变成了 acks = 1。  
+所以需要 Broker 端设置 min.insync.replicas 参数：当参数值为 2 时，如果副本数小于 2 个，会抛出异常。
+
+> 注：然而在笔者的使用环境中，订阅是 Kafka 主要的使用场景之一，方式是对于想要订阅的某个 Topic，每个用户创建并独享一个不会重复的消费组。所以这样的情况下，环境下的 min.insync.replicas 只能等于 1；
+
+除此之外，broker 端还有一个需要注意的参数 **unclean.leader.election.enable**。该参数为 true 的时候，表示在 leader 下线的时候，可以从非 ISR 集合中选举出新的 Leader。这样的话可能会造成数据的丢失。所以如果需要在 Broker 端的 unclean.leader.election.enable 设置为 false。
+
+#### 20.1.3 Consumer 消费者端
+
+Consumer 端比较麻烦，原因是需要考虑到某个 Consumer 宕机后，同 Consumer Group 会发生负载均衡，同 Group 其他的 Consumer 会重新接管并继续消费。
+
+假设两种场景：
+
+**第一个场景，Consumer 先提交 offset，再处理消息**。代码如下：
+
+```java
+List<String> messages = consumer.poll();
+consumer.commitOffset();
+processMsg(messages);
+```
+
+这种情形下，提交 offset 成功，但处理消息失败，同时当前 Consumer 宕机，这时候发生负载均衡，其他 Consumer 从**已经提交的 offset** 之后继续消费。这样的情况保证了 **<font color=red>at most once</font>** 的消费语义，当然也可能会丢消息。
+
+**第二个场景，Consumer 先处理消息，再提交 offset**。代码如下：
+
+```java
+List<String> messages = consumer.poll();
+processMsg(messages);
+consumer.commitOffset();
+```
+
+这种情形下，消息处理成功，提交 offset 失败，同时当前 Consumer 宕机，这时候发生负载均衡，其他 Consumer 依旧从同样的 offset 拉取消息消费。这样的情况保证了 **<font color=red>at least once</font>** 的消费语义，可能会重复消费消息。
+
+上述机制的保证都不是直接一个配置可以解决的，而是 Consumer 端代码的处理先后顺序问题完成的。
 
 ## 其他提问
 
@@ -199,9 +292,7 @@ Key是由生产者发送数据传入
 	- 在并发量较大的情况下，需要使用消息队列，对流入后台的请求进行缓冲；
 - 你们的消息中间件技术选型为什么是 RabbitMQ？为什么不用 RocketMQ 或者是 Kafka？技术选型的依据是什么？
 	- 
-- 你们怎么保证消息中间件的高可用性？避免消息中间件故障后引发系统整体故障？
-- 使用消息中间件技术的时候，你们怎么保证投递出去的消息一定不会丢失？
-- 你们怎么保证投递出去的消息只有一条且仅仅一条，不会出现重复的数据？如果消费了重复的消息怎么保证数据的准确性？
+- 如果消费了重复的消息怎么保证数据的准确性？
 - 你们线上业务用消息中间件的时候，是否需要保证消息的顺序性？如果不需要保证消息顺序是为什么？假如我有一个场景要保证消息的顺序，你们应该如何保证？
 	- 业务修改，数据上报的场景，先删后增；但如果并发量大，可能会出现问题，变成删删增增，结果不正确。此外，存入数据库中的数据应该由收到数据的顺序决定，所以用到了 Kafka 消息队列的顺序性；
 	- 构建 Topic 时建了 3 个 Partition，在投递消息的时候，按照单位 ID 进行 Hash 计算，相同 ID 的单位保证是进入同一个 Partition，这样就进入了相同的队列，也就保证了消息队列的顺序性。
