@@ -157,9 +157,40 @@ request.required.acks有三个值 0 1 -1
 ## 十四. 消费者负载均衡策略
 一个消费者组中的一个分片对应一个消费者成员，他能保证每个消费者成员都能访问，如果组中成员太多会有空闲的成员
 
-## 十五. 数据有序
-一个消费者组里它的内部是有序的
-消费者组与消费者组之间是无序的
+## 十五. Kafka 再均衡原理
+
+### 15.1 消费者再均衡
+
+Kafka 通过 **消费组协调器 (GroupCoordinator)** 与**消费者协调器 (ConsumerCoordinator)**，实现消费者再均衡操作。  
+
+- **消费组协调器 (GroupCoordinator)**：Kafka 服务端中，用于管理消费组的组件；
+- **消费者协调器 (ConsumerCoordinator)**：Consumer 客户端中，负责与 GroupCoordinator 进行交互；
+
+> 注：新版消费者客户端将全部消费组分成多个子集，每个消费组的子集在服务端对应一个 GroupCoordinator 进行管理。
+
+ConsumerCoordinator 与 GroupCoordinator 之间最重要的职责就是负责执行**消费者再均衡**操作。导致消费者再均衡的操作：
+
+- 新的消费者加入消费组；
+- 消费者宕机下线；
+- 消费者主动退出消费组；
+- 消费组对应的 GroupCoordinator 节点发生了变更；
+- 任意主题或主题分区数量发生变化；
+
+### 15.2 消费者再均衡阶段
+
+#### 15.2.1 阶段一：寻找 GroupCoordinator
+
+消费者需要确定它所述消费组对应 GroupCoordinator 所在 broker，并创建网络连接。向集群中负载最小的节点发送 **FindCoordinatorRequest**；  
+Kafka 收到 FindCoordinatorRequest 后，根据请求中包含的 groupId 查找对应的 GroupCoordinator 节点。
+
+#### 15.2.2 阶段二：加入消费组
+
+消费者找到消费组对应的 GroupCoordinator 之后，进入加入消费组的阶段。消费者会向 GroupCoordinator 发送 **JoinGroupRequest** 请求。  
+
+1. GroupCoordinator 为消费组内的消费者，选举该消费组的 Leader；
+	- 如果消费组内还没有 Leader，那么第一个加入消费组的消费者会成为 Leader；对于普通的选举情况，选举消费组 Leader 的算法很随意，基本上可以认为是随机选举；
+2. 选举分区分配策略
+	- 
 
 ## 十六. kafka生产数据时数据的分组策略
 生产者决定数据产生到集群的哪个partition中
@@ -186,11 +217,20 @@ Key是由生产者发送数据传入
 **解决方法二**：临时紧急扩容；
 
 1. 先找到并修复 consumer 的问题，恢复消费速度，**然后停掉现有所有 consumer**。
+
 2. 新建一个 topic，具有原先 10 倍的 partition，临时建立好原先 10 到 20 倍的队列数量；
+
 3. 写一个临时分发数据的 consumer 程序，**这个程序部署上去，消费积压的数据**。消费之后不做耗时的处理，<font color=red>**直接均匀轮询，写入临时建好 10 倍数量的队列**</font>。
+
 4. 临时征用 10 倍的机器，部署 consumer，每一批 consumer 消费一个临时队列的数据。
+	
 	- 这种做法相当于**<font color=red>临时将队列资源、消费者资源扩大十倍</font>**，以十倍的速度来消费数据；
+	
 5. 快速消费完积压的数据之后，恢复原先的架构，重新用修复后的原 consumer 机器来消费消息。
+
+### 17.2 业务组解决方法
+
+
 
 ## 十八. 消息中间件的高可用性
 
