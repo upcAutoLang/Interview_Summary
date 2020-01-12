@@ -2,7 +2,7 @@
 
 > [《Kafka面试题参考》](https://blog.csdn.net/linke1183982890/article/details/83303003)
 
-## 一. Kafka的设计是什么样的呢？
+## 一. Kafka 的元素，组成，架构
 
 Kafka将消息以topic为单位进行归纳
 将向Kafka topic发布消息的程序成为producers.
@@ -31,6 +31,9 @@ producer直接将数据发送到broker的leader(主节点)，不需要在多个�
 Kafa consumer消费消息时，向broker发出"fetch"请求去消费特定分区的消息，consumer指定消息在日志中的偏移量（offset），就可以消费从这个位置开始的消息，customer拥有了offset的控制权，可以向后回滚去重新消费之前的消息，这是很有意义的
 
 ## 六. Kafka消息是采用Pull模式，还是Push模式？
+
+- 推模式、拉模式：ActiveMQ 推模式可以将消息推送给服务，不需要服务端进行持续的轮询。但是推模式最大的弊端是，如果生产者的生产速度过快，有大量的消息堆积，消费者可能撑不住宕机。
+- 反过来，拉模式由于自身通过轮询的方式拉取消息，消费速度相对可控制，所以可以实现一种削峰限流的作用。 
 
 Kafka最初考虑的问题是，customer应该从brokes拉取消息还是brokers将消息推送到consumer，也就是pull还push。在这方面，Kafka遵循了一种大部分消息系统共同的传统的设计：producer将消息推送到broker，consumer从broker拉取消息
 
