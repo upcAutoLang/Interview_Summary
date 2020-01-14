@@ -185,12 +185,39 @@ Kafka 收到 FindCoordinatorRequest 后，根据请求中包含的 groupId 查�
 
 #### 15.2.2 阶段二：加入消费组
 
-消费者找到消费组对应的 GroupCoordinator 之后，进入加入消费组的阶段。消费者会向 GroupCoordinator 发送 **JoinGroupRequest** 请求。  
+消费者找到消费组对应的 GroupCoordinator 之后，进入加入消费组的阶段。消费者会向 GroupCoordinator 发送 **JoinGroupRequest** 请求。每个消费者发送的 GroupCoordinator 中，都携带了**各自提案的分配策略与订阅信息**。
+
+Kafka Broker 收到请求后进行处理。  
 
 1. GroupCoordinator 为消费组内的消费者，选举该消费组的 Leader；
 	- 如果消费组内还没有 Leader，那么第一个加入消费组的消费者会成为 Leader；对于普通的选举情况，选举消费组 Leader 的算法很随意，基本上可以认为是随机选举；
 2. 选举分区分配策略
-	- 
+	- Kafka 服务端收到各个消费者支持的分配策略，构成候选集，所有的消费者从候选集中找到第一个分配策略进行投票，最后票数最多的策略成为当前消费组的分配策略。
+
+> 注：如果有消费者不支持选出的分配策略，会报出异常。
+
+Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者。JoinGroupResponse 回执中包含着 GroupCoordinator 投票选举的结果，在这些分别给各个消费者的结果中，只有**给 leader 消费者的回执中包含各个消费者的订阅信息**。
+
+#### 15.2.3 阶段三：同步阶段
+
+加入消费者的结果通过响应返回给各个消费者，消费者接收到响应后，开始准备实施具体的分区分配。上一步中只有 leader 消费者收到了包含各消费者订阅结果的回执信息，所以**需要 leader 消费者主导转发同步分配方案**。转发同步分配方案的过程，就是**同步阶段**。  
+同步阶段，leader 消费者是**通过“中间人” GroupCoordinator 进行**的。各个消费者向 GroupCoordinator 发送 SyncGroupRequest 请求，其中**只有 leader 消费者发送的请求中包含相关的分配方案**。Kafka 服务端收到请求后交给 GroupCoordinator 处理。处理过程有：
+
+1. 主要是将消费组的元数据信息存入 Kafka 的 \_\_consumer\_offset 主题中；
+2. 最后 GroupCoordinator 将各自所属的分配方案发送给各个消费者。
+
+各消费者收到分配方案后，会开启 ConsumerRebalanceListener 中的 onPartitionAssigned() 方法，**开启心跳任务**，与 GroupCoordinator 定期发送心跳请求 HeartbeatRequest，保证彼此在线。
+
+#### 15.2.4 阶段四：心跳阶段
+
+进入该阶段后的消费者，已经属于进入正常工作状态了。消费者通过向 GroupCoordinator 发送心跳，来维持它们与消费组的从属关系，以及对 Partition 的所有权关系。  
+心跳线程是一个独立的线程，可以在轮询消息空档发送心跳。如果一个消费者停止发送心跳的时间比较长，那么**整个会话被判定为过期**，GroupCoordinator 会认为这个消费者已经死亡，**则会触发再均衡行为**。
+
+触发再均衡行为的情况：
+
+1. 停止发送心跳请求；（包括消费者发生崩溃的情况）
+2. 参数 max.poll.interval.ms 是 poll() 方法调用之间的最大延迟，如果在该时间范围内，poll() 方法没有调用，那么消费者被视为失败，触发再均衡；
+3. 消费者可以主动发送 LeaveGroupRequest 请求，主动退出消费组，也会触发再均衡。
 
 ## 十六. kafka生产数据时数据的分组策略
 生产者决定数据产生到集群的哪个partition中
