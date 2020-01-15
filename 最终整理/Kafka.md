@@ -10,12 +10,86 @@ Kafka将消息以topic为单位进行归纳
 Kafka以集群的方式运行，可以由一个或多个服务组成，每个服务叫做一个broker.
 producers通过网络将消息发送到Kafka集群，集群向消费者提供消息
 
-## 二. 数据传输的事物定义有哪三种？
+## 二. Kafka 事务
 
-数据传输的事务定义通常有以下三种级别：
-（1）最多一次: 消息不会被重复发送，最多被传输一次，但也有可能一次不传输
-（2）最少一次: 消息不会被漏发送，最少被传输一次，但也有可能被重复传输.
-（3）精确的一次（Exactly once）: 不会漏传输也不会重复传输,每个消息都传输被一次而且仅仅被传输一次，这是大家所期望的
+### 2.1 Kafka 事务简述
+
+Kafka 事务与数据库的事务定义基本类似，主要是一个原子性：**多个操作要么全部成功，要么全部失败**。Kafka 中的事务可以使应用程序将**消费消息、生产消息、提交消费位移**当作原子操作来处理。   
+为了实现事务，Producer 应用程序必须做到：
+
+1. 提供唯一的 **transactionalId**
+	- <code>properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "transacetionId");</code>
+	- Kafka 可以通过相同的 transactionalId 确定唯一的生产者。对于相同 transactionalId 的新生 Producer，实例被创建且工作时，旧的 Producer 实例将不再工作。即消息跨生产者的的**幂等性**。
+2. 要求 Producer **开启幂等特性**
+	- 将 enable.idempotence 设置为 true；
+
+> 注：  
+> 1. transactionalId 与 PID 一一对应，为了保证新的 Producer 启动之后，具有相同的 transactionalId 的旧生产者立即失效，每个 Producer 通过 transactionalId 获取 PID 的时候，还会获取一个单调递增的 **producer epoch**。
+> 2. Kafka 的事务主要是针对 Producer 而言的。对于 Consumer，考虑到日志压缩（相同 Key 的日志被新消息覆盖）、可追溯的 seek() 等原因，Consumer 关于事务语义较弱。
+> 3. 对于 Kafka Consumer，在实现事务配置时，一定要关闭自动提交的选项，即 props.put("ConsumerConfig.ENABLE\_AUTO\_COMMIT\_CONFIG, false");
+
+### 2.2 消费-转换-生产模式
+
+消费-转换-生产模式是一种常见的，又比较复杂的情况，由于**同时存在消费与生产**，所以整个过程通常需要事务化。   
+通常在实现该模式时，需要同时构建一个用于拉取原消息的 Consumer，一个将原消息处理后，将处理后消息投递出去的 Producer。在代码上主要有五个步骤：
+
+```java
+// 初始化事务
+producer.initTransactions();
+// 开启事务
+producer.beginTransaction();
+// 消费 - 生产模型
+producer.send(producerRecord);
+// 提交消费位移
+producer.sendOffsetsToTransaction(offsets, "groupId");
+// 提交事务
+producer.commitTransaction();
+```
+
+上述过程全部被 try... catch...，如果中间出现错误，需要在 catch 块中执行：
+
+```java
+// 中止事务
+producer.abortTransaction();
+```
+
+### 2.3 Kafka 事务的实现
+
+实现 Kafka 事务，主要使用到 Broker 端的**事务协调器 (TransactionCoordinator)**。每个 Producer 都会被指定一个特定的 TransactionalCoordinator，用来负责处理其事务，与消费者 Rebalance 时的 GroupCoordinator 作用类似。实现事务的流程如下图所示：   
+
+<img src="./pic/Kafka消费-转换-生产.png" alt="消费-转换-生产流程" style="zoom:67%;" />
+
+基本步骤如下：
+
+#### 2.3.1 查找 TransactionalCoordinator
+
+Producer 向 Broker 集群发送 FindCoordinatorRequest，Broker 集群根据 Request 中包含的 transactionalId 查找对应的 TransactionalCoordinator 节点并返回给 Producer。
+
+#### 2.3.2 获取 Producer ID
+
+Producer 向刚刚找到的 TransactionalCoordinator 发送 InitProducerIdRequest 请求，为当前 Producer 分配一个 Producer ID。
+
+> 注：如果 TransactionalCoordinator 第一次收到包含该 transactionalId 的消息，则将相关消息存入主题 \_\_transaction\_state 中。
+
+#### 2.3.3 开启事务
+
+Producer 发送第一条消息，则 TransactionalCoordinator 认为已经发起了事务。
+
+#### 2.3.4 消费-转换-生产
+
+前面的阶段都是开始阶段，该阶段包含了整个事务的处理过程。需要做如下工作：
+
+1. **存储对应关系**
+	- Producer 在向新分区发送数据之前，首先向 TransactionalCoordinator 发送请求，使 TransactionalCoordinator 存储对应关系 **(transactionalId, TopicPartition)** 到主题 \_\_transaction\_state 中。
+2. **生产者发送消息**
+	- 与普通的发送消息相同；
+3. **处理消费和发送**
+4. **事务位移提交**
+5. **提交或终止事务**
+	- 在正常结束或者异常结束，都会结束当前事务。Producer 向 TransactionalCoordinator 发送 EndTxnRequest 请求，TransactionalCoordinator 收到请求后执行如下操作：
+		1. 将**准备完毕消息 (PREPARE\_COMMIT)** 或 **准备异常消息 (PREPARE\_ABORT)**  消息写入主题 \_\_transaction\_state；
+		2. 通过 WriteTxnMarkersRequest 请求，将 COMMIT 或 ABORT 信息写入用户的**普通主题**和**\_\_consumer\_offsets**。
+		3. 将**消费成功消息 (COMPLETE\_COMMIT)**  或**消费异常中止消息 (COMPLETE\_ABORT)**  消息写入 \_\_transaction\_state 中；
 
 ## 三. Kafka判断一个节点是否还活着有那两个条件？
 
