@@ -216,6 +216,8 @@ Kafka 与传统消息系统之间有三个关键区别：
 
 ## 六. Kafka 的顺序性
 
+> 参考地址：[《消息队列面试热点：如何保证消息的顺序性？》](https://zhuanlan.zhihu.com/p/92622338v)
+
 **问题：**你们线上业务用消息中间件的时候，是否需要保证消息的顺序性？如果不需要保证消息顺序是为什么？假如我有一个场景要保证消息的顺序，你们应该如何保证？
 
 对于这种问题，主要思想是保证消息入队的有序，出队以后的顺序交给消费者自己去保证，没有固定套路。对于笔者的实际项目：
@@ -242,14 +244,14 @@ ConsumerCoordinator 与 GroupCoordinator 之间最重要的职责就是负责执
 - 消费组对应的 GroupCoordinator 节点发生了变更；
 - 任意主题或主题分区数量发生变化；
 
-### 8.2 消费者再均衡阶段
+### 7.2 消费者再均衡阶段
 
-#### 8.2.1 阶段一：寻找 GroupCoordinator
+#### 7.2.1 阶段一：寻找 GroupCoordinator
 
 消费者需要确定它所述消费组对应 GroupCoordinator 所在 broker，并创建网络连接。向集群中负载最小的节点发送 **FindCoordinatorRequest**；  
 Kafka 收到 FindCoordinatorRequest 后，根据请求中包含的 groupId 查找对应的 GroupCoordinator 节点。
 
-#### 8.2.2 阶段二：加入消费组
+#### 7.2.2 阶段二：加入消费组
 
 消费者找到消费组对应的 GroupCoordinator 之后，进入加入消费组的阶段。消费者会向 GroupCoordinator 发送 **JoinGroupRequest** 请求。每个消费者发送的 GroupCoordinator 中，都携带了**各自提案的分配策略与订阅信息**。
 
@@ -264,7 +266,7 @@ Kafka Broker 收到请求后进行处理。
 
 Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者。JoinGroupResponse 回执中包含着 GroupCoordinator 投票选举的结果，在这些分别给各个消费者的结果中，只有**给 leader 消费者的回执中包含各个消费者的订阅信息**。
 
-#### 8.2.3 阶段三：同步阶段
+#### 7.2.3 阶段三：同步阶段
 
 加入消费者的结果通过响应返回给各个消费者，消费者接收到响应后，开始准备实施具体的分区分配。上一步中只有 leader 消费者收到了包含各消费者订阅结果的回执信息，所以**需要 leader 消费者主导转发同步分配方案**。转发同步分配方案的过程，就是**同步阶段**。  
 同步阶段，leader 消费者是**通过“中间人” GroupCoordinator 进行**的。各个消费者向 GroupCoordinator 发送 SyncGroupRequest 请求，其中**只有 leader 消费者发送的请求中包含相关的分配方案**。Kafka 服务端收到请求后交给 GroupCoordinator 处理。处理过程有：
@@ -274,7 +276,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 
 各消费者收到分配方案后，会开启 ConsumerRebalanceListener 中的 onPartitionAssigned() 方法，**开启心跳任务**，与 GroupCoordinator 定期发送心跳请求 HeartbeatRequest，保证彼此在线。
 
-#### 8.2.4 阶段四：心跳阶段
+#### 7.2.4 阶段四：心跳阶段
 
 进入该阶段后的消费者，已经属于进入正常工作状态了。消费者通过向 GroupCoordinator 发送心跳，来维持它们与消费组的从属关系，以及对 Partition 的所有权关系。  
 心跳线程是一个独立的线程，可以在轮询消息空档发送心跳。如果一个消费者停止发送心跳的时间比较长，那么**整个会话被判定为过期**，GroupCoordinator 会认为这个消费者已经死亡，**则会触发再均衡行为**。
@@ -285,7 +287,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 2. 参数 max.poll.interval.ms 是 poll() 方法调用之间的最大延迟，如果在该时间范围内，poll() 方法没有调用，那么消费者被视为失败，触发再均衡；
 3. 消费者可以主动发送 LeaveGroupRequest 请求，主动退出消费组，也会触发再均衡。
 
-## 九. Kafka 消息积压
+## 八. Kafka 消息积压
 
 > [《07、完了！生产事故！几百万消息在消息队列里积压了几个小时！》](https://blog.csdn.net/A_BlackMoon/article/details/85197943)
 
@@ -299,7 +301,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 
 如果是服务端本身的情况，那就需要排查服务端本身的故障。
 
-### 9.1 问题 1：服务端故障
+### 8.1 问题 1：服务端故障
 
 **假设服务端出了故障，大量消息再 MQ 里积压**：  
 
@@ -315,12 +317,12 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 
 解决方案三：见业务组解决方法。
 
-### 9.2 业务组解决方法
+### 8.2 业务组解决方法
 
 当时出现这个问题，是因为某个 Topic 有多个分区，但只有一个分区里分配了大量消息，另外分区分配基本为空，所以导致所有消息只在一个分区中，单个消费者消费速度有限，最后导致了消息堆积。  
 最后解决该问题的方式：通过命令行**<font color=red>（命令行内容？？）</font>**将堆积消息的分区上的消息转义到其他消费压力较小的 broker 上对应的分区。
 
-## 十. 消息中间件的高可用性
+## 九. 消息中间件的高可用性
 
 实现高可用性的方式一般都是**进行 replication**。对于 kafka，如果没有提供高可用性机制，一旦一个或多个 Broker 宕机，则宕机期间其上所有 Partition 都无法继续提供服务。若该 Broker永远不能再恢复，那么所有的数据也就将丢失，这是不可容忍的。所以 kafka 高可用性的设计也是进行 Replication。  
 **Replica 的分布**：为了尽量做好负载均衡和容错能力，需要将同一个 Partition 的 Replica 尽量分散到不同的机器。  
@@ -337,7 +339,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 4. **异步**：收到同步消息的 ISR 中的 replica，异步将消息同步给 ISR 集合外的 replica。
 
 
-## 十一. 避免消息中间件故障后引发系统整体故障
+## 十. 避免消息中间件故障后引发系统整体故障
 
 如果所有的 replica 都不工作了，有两种解决方式：
 
@@ -348,7 +350,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 	- 可用性较高；
 
 
-## 十二. Kafka 消息投递（重复消费、可靠性传输）
+## 十一. Kafka 消息投递（重复消费、可靠性传输）
 
 > 参考地址：  
 > [《Kafka消息投递语义-消息不丢失，不重复，不丢不重》](https://www.cnblogs.com/3gods/p/7530828.html)  
@@ -363,7 +365,14 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 
 造成重复消费的原因，就是**因为网络传输等等故障**，确认信息没有传送到消息队列，导致消息队列不知道自己已经消费过该消息了，再次将消息分发给其他的消费者。
 
-### 12.1 Kafka 消息投递语义
+如何解决？这个问题针对业务场景来答，分以下三种情况：
+
+- 实际使用方案：**准备一个第三方介质，来做消费记录**
+	- 以 redis 为例，给消息分配一个全局 ID，只要消费过该消息，将 \<id,message\>以 K-V 形式写入 redis。消费者开始消费前，先去 redis 中查询有没有消费记录即可。
+- **数据库主键**：拿到这个消息做数据库的 insert 操作，那就容易了，给这个消息做一个唯一的主键，那么就算出现重复消费的情况，就会导致**主键冲突**，避免数据库出现脏数据。
+- **Redis Set 操作**：拿到这个消息做 redis 的 set 的操作，那就容易了，不用解决，set 操作无论几次结果都是一样的，因为 set 操作本来就是幂等操作。
+
+### 11.1 Kafka 消息投递语义
 
 kafka 有三种消息投递语义：
 
@@ -373,7 +382,7 @@ kafka 有三种消息投递语义：
 
 整体的消息投递语义由**生产者、消费者**两端同时保证。
 
-### 12.2 Producer 生产者端
+### 11.2 Producer 生产者端
 
 Producer 端保证消息投递重复性，是通过 **Producer 的 <font color=red>acks</font> 参数**与 **Broker 端的 <font color=red>min.insync.replicas</font> 参数**决定的。  
 
@@ -386,7 +395,7 @@ Producer 端的 **acks 参数**值信息如下：
 
 前面 Producer 的 acks = 1 可以保证写入 Leader 副本，对大部分情况没有问题。但如果刚刚一条消息写入 Leader，还没有把这条消息同步给其他 Replica，Leader 就挂了，那么这条消息也就丢失了。所以如果保证消息的完全投递，还是需要令 acks = all；
 
-### 12.3 Broker 节点端
+### 11.3 Broker 节点端
 
 首先上面说到，为了配合 Producer acks 参数为 all，需要令 Broker 端参数 min.insync.replicas = 2；  
 min.insync.replicas 参数是用来配合 Producer acks 参数的。因为如果 acks 设置为 all，但某个 Topic 只有 leader 一个 Replica（或者某个 Kafka 集群中由于同步很慢，导致所有 follower 全部被剔除 ISR 集合），这样 acks = -1 就演变成了 acks = 1。  
@@ -396,7 +405,7 @@ min.insync.replicas 参数是用来配合 Producer acks 参数的。因为如果
 
 除此之外，broker 端还有一个需要注意的参数 **unclean.leader.election.enable**。该参数为 true 的时候，表示在 leader 下线的时候，可以从非 ISR 集合中选举出新的 Leader。这样的话可能会造成数据的丢失。所以如果需要在 Broker 端的 unclean.leader.election.enable 设置为 false。
 
-### 12.4 Consumer 消费者端
+### 11.4 Consumer 消费者端
 
 Consumer 端比较麻烦，原因是需要考虑到某个 Consumer 宕机后，同 Consumer Group 会发生负载均衡，同 Group 其他的 Consumer 会重新接管并继续消费。
 
@@ -430,14 +439,14 @@ consumer.commitOffset();
 > - 注册中心通过**请求 -> 响应**的模式，等待其他服务处理结果完毕之后的响应；
 > - Kafka 的将消息从生产者投递，消费者接收，但消费者的消费结果通常生产者并不需要的，生产者只需要确保将消息投递到 Kafka Broker 节点即可。
 
-## 十三. Kafka新建的分区会在哪个目录下创建
+## 十二. Kafka新建的分区会在哪个目录下创建
 
 在启动 Kafka 集群之前，我们需要配置好 log.dirs 参数，其值是 Kafka 数据的存放目录，这个参数可以配置多个目录，目录之间使用逗号分隔，通常这些目录是分布在不同的磁盘上用于提高读写性能。  
 当然我们也可以配置 log.dir 参数，含义一样。只需要设置其中一个即可。  
 如果 log.dirs 参数只配置了一个目录，那么分配到各个 Broker 上的分区肯定只能在这个目录下创建文件夹用于存放数据。  
 但是如果 log.dirs 参数配置了多个目录，那么 Kafka 会在哪个文件夹中创建分区目录呢？答案是：Kafka 会在含有分区目录最少的文件夹中创建新的分区目录，分区目录名为 Topic名+分区ID。注意，是分区文件夹总数最少的目录，而不是磁盘使用量最少的目录！也就是说，如果你给 log.dirs 参数新增了一个新的磁盘，新的分区目录肯定是先在这个新的磁盘上创建直到这个新的磁盘目录拥有的分区目录不是最少为止。
 
-## 十四. 消费者负载均衡策略
+## 十三. 消费者负载均衡策略
 
 一个消费者组中的一个分片对应一个消费者成员，他能保证每个消费者成员都能访问，如果组中成员太多会有空闲的成员
 
@@ -449,22 +458,21 @@ consumer.commitOffset();
 	- 在并发量较大的情况下，需要使用消息队列，对流入后台的请求进行缓冲；
 - 你们的消息中间件技术选型为什么是 RabbitMQ？为什么不用 RocketMQ 或者是 Kafka？技术选型的依据是什么？
 	- 
-- 如果消费了重复的消息怎么保证数据的准确性？
 - 你们用的是Kafka？那你说说Kafka的底层架构原理，磁盘上数据如何存储的，整体分布式架构是如何实现的，如何保证数据的高容错性，零拷贝等技术是如何运用的，高吞吐量下如何优化生产者和消费者的性能？那你看过Kafka的源码没有，说说你对Kafka源码的理解？
 - 你们用的是RocketMQ？RocketMQ很大的一个特点是对分布式事务的支持，你说说他在分布式事务支持这块机制的底层原理？RocketMQ的源码看过么，聊聊你对RocketMQ源码的理解？
 - 如果让你来动手实现一个分布式消息中间件，整体架构你会如何设计实现？
-- Kafka判断一个节点是否还活着有那两个条件？
-	- 节点必须可以维护和ZooKeeper的连接，Zookeeper通过心跳机制检查每个节点的连接
-	- 如果节点是个follower,他必须能及时的同步leader的写操作，延时不能太久
-- producer是否直接将数据发送到broker的leader(主节点)？
-	- producer直接将数据发送到broker的leader(主节点)，不需要在多个节点进行分发，为了帮助producer做到这点，所有的Kafka节点都可以及时的告知:哪些节点是活动的，目标topic目标分区的leader在哪。这样producer就可以直接将消息发送到目的地了
-- Kafka存储在硬盘上的消息格式是什么？
-	- 消息由一个固定长度的头部和可变长度的字节数组组成。头部包含了一个版本号和CRC32校验码。
+- Kafka 判断一个节点是否还活着有那两个条件？
+	- 节点必须可以维护和 ZooKeeper 的连接，Zookeeper 通过心跳机制检查每个节点的连接
+	- 如果节点是个 follower，他必须能及时的同步 leader 的写操作，延时不能太久
+- producer 是否直接将数据发送到 broker 的 leader？
+	- producer 直接将数据发送到 broker 的 leader，不需要在多个节点进行分发。为了帮助 producer 做到这点，所有的 Kafka 节点都可以及时的告知，哪些节点是活动的，目标 topic 目标分区的 leader 在哪。这样 producer 就可以直接将消息发送到目的地了。
+- Kafka 存储在硬盘上的消息格式是什么？
+	- 消息由一个固定长度的头部和可变长度的字节数组组成。头部包含了一个版本号和 CRC32 校验码。
 		- 消息长度: 4 bytes (value: 1+4+n)
 		- 版本号: 1 byte
 		- CRC校验码: 4 bytes
 		- 具体的消息: n bytes
-- Kafka创建Topic时如何将分区放置到不同的Broker中
+- Kafka 创建 Topic 时如何将分区放置到不同的 Broker 中
 	- 副本因子不能大于 Broker 的个数；
 	- 第一个分区（编号为0）的第一个副本放置位置是随机从 brokerList 选择的；
 	- 其他分区的第一个副本放置位置相对于第0个分区依次往后移。也就是如果我们有5个 Broker，5个分区，假设第一个分区放在第四个 Broker 上，那么第二个分区将会放在第五个 Broker 上；第三个分区将会放在第一个 Broker 上；第四个分区将会放在第二个 Broker 上，依次类推；
