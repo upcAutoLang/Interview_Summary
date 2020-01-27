@@ -4,11 +4,41 @@
 
 ## 一. Kafka 的元素，组成，架构
 
+### 1.1 Kafka 的基本组成
+
 Kafka将消息以topic为单位进行归纳
 将向Kafka topic发布消息的程序成为producers.
 将预订topics并消费消息的程序成为consumer.
 Kafka以集群的方式运行，可以由一个或多个服务组成，每个服务叫做一个broker.
 producers通过网络将消息发送到Kafka集群，集群向消费者提供消息
+
+### 1.2 Kafka 分区的 HW, LEO
+
+> 参考地址：  
+> [《Kafka中的HW、LEO、LSO等分别代表什么？》](https://www.cnblogs.com/yoke/p/11486196.html)
+
+**HW (High Watermark)**，高水位，它标识了一个特定的消息偏移量，消费者只能拉取到这个  offset 之前的消息。**HW 是针对于<font color=red>分区</font>的概念**，对消费者而言，只能消费 HW 之前的消息。   
+**LEO (Log End Offset)，待写入日志偏移量**，它标识了当前日志文件中下一条待写入的消息的 offset。**LEO 是针对于<font color=red>ISR 集合中分区副本</font>的概念**，ISR 集合中每个分区的副本都会维护自身的 LEO。此外，**ISR 集合中最小的 LEO，即为分区的 HW**。
+
+![HW, LEO](./pic/Kafka_HW_LEO.png)
+
+上图表示一个日志分区副本文件，这个日志分区副本文件中只有 9 条消息，第一条消息的 offset 为 0，最右一条消息的 offset 为8。offset 为 9 的消息使用虚线表示的，代表下一条待写入的消息。  
+日志分区副本文件的 HW 为 6，表示消费者只能拉取 offset 在 0 到 5 之间的消息，offset 为 6 的消息对消费者而言是不可见的。  
+上图中 offset 为 9 的位置即为当前日志分区副本文件的 LEO，LEO 的大小相当于**当前日志分区副本中，最后一条消息的 offset + 1**。
+
+下面具体分析一下 ISR 集合和 HW、LEO的关系。  
+如下图所示，假设某分区的 ISR 集合中有 3 个副本，即一个 leader 副本和 2 个 follower 副本，此时分区的 LEO 和 HW 都分别为 3 。消息 3 和消息 4 从生产者出发之后，先被存入 leader 副本。在消息被写入 leader 副本之后，follower 副本会发送拉取请求来拉取消息 3 和消息 4 进行消息同步。
+
+![ISR 集合中 HW 与 LEO 关系 -- 1](./pic/ISR_HW与LEO关系_01.png)
+
+在同步过程中不同的副本同步的效率不尽相同，如下图所示。在某一时刻 follower1 完全跟上了 leader 副本而 follower2 只同步了消息 3，如此 **leader 副本的 LEO 为 5，follower1 的 LEO 为 5，follower2 的LEO 为 4**。当前分区的 HW 取 ISR 集合中 LEO 的最小值，即当前分区的 **HW 为 4**，即消费者可以消费到 offset0 至 3 之间的消息。
+
+![ISR 集合中 HW 与 LEO 关系 -- 2](./pic/ISR_HW与LEO关系_02.png)
+
+当所有副本都成功写入消息 3 和消息 4 之后，整个分区的 HW 和 LEO 都变为 5，因此消费者可以消费到 offset 为 4 的消息了。图略。  
+由此可见 kafka 的复制机制既不是完全的同步复制，也不是单纯的异步复制。事实上，同步复制要求所有能工作的 follower 副本都复制完，这条消息才会被确认已成功提交，这种复制方式极大的影响了性能。而在异步复制的方式下，follower 副本异步的从 leader 副本中复制数据，数据只要被 leader 副本写入，就会被认为已经成功提交。在这种情况下，如果 follower 副本都还没有复制完而落后于 leader 副本，然后 leader 副本宕机，则会造成数据丢失。  
+最终，kafka 使用这种 ISR 的方式有效的权衡了数据可靠性和性能之间的关系。
+
 
 ## 二. Kafka 事务
 
