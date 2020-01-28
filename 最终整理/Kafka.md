@@ -239,7 +239,7 @@ Kafka 通过 **消费组协调器 (GroupCoordinator)** 与**消费者协调器 (
 ConsumerCoordinator 与 GroupCoordinator 之间最重要的职责就是负责执行**消费者再均衡**操作。导致消费者再均衡的操作：
 
 - 新的消费者加入消费组；
-- 消费者宕机下线；
+- 消费者宕机下线（不一定是真的下线，令消费组以为消费者宕机下线的本质原因是**消费者长时间未向 GroupCoordinator 发送心跳包**）；
 - 消费者主动退出消费组；
 - 消费组对应的 GroupCoordinator 节点发生了变更；
 - 任意主题或主题分区数量发生变化；
@@ -286,6 +286,52 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 1. 停止发送心跳请求；（包括消费者发生崩溃的情况）
 2. 参数 max.poll.interval.ms 是 poll() 方法调用之间的最大延迟，如果在该时间范围内，poll() 方法没有调用，那么消费者被视为失败，触发再均衡；
 3. 消费者可以主动发送 LeaveGroupRequest 请求，主动退出消费组，也会触发再均衡。
+
+### 7.3 频繁再均衡
+
+> 参考地址：[《记一次线上kafka一直rebalance故障》](https://www.jianshu.com/p/271f88f06eb3)
+
+由前面章节可知，有多种可能触发再均衡的原因。下述记录一次 Kafka 的频繁再均衡故障。平均间隔 2 到 3 分钟就会触发一次再均衡，分析日志发现比较严重。主要日志内容如下：
+
+> commit failed   
+> org.apache.kafka.clients.consumer.CommitFailedException: Commit cannot be completed since the group has already rebalanced and assigned the partitions to another member. This means that the time between subsequent calls to poll() was longer than the configured max.poll.interval.ms, which typically implies that the poll loop is spending too much time message processing. You can address this either by increasing the session timeout or by reducing the maximum size of batches returned in poll() with max.poll.records.
+
+这个错误意思是消费者在处理完一批 poll 的消息之后，同步提交偏移量给 Broker 时报错，主要原因是**当前消费者线程消费的分区已经被 Broker 节点回收了**，所以 Kafka 认为这个消费者已经死了，导致提交失败。  
+导致该问题的原因，主要涉及构建消费者的一个属性 **<font color=red>max.poll.interval.ms</font>**。这个属性的意思是**消费者两次 poll() 方法调用之间的最大延迟**。如果超过这个时间 poll 方法没有被再次调用，则认为该消费者已经死亡，触发消费组的再平衡。该参数的默认值为 300s，但我们业务中设置了 5s。
+
+查询 Kafka 拉取日志后，发现有几条日志由于逻辑问题，单条数据处理时间超过了一分钟，所以在处理一批消息之后，总时间超过了该参数的设置值 5s，导致消费者被踢出消费组，导致再均衡。
+
+解决方法：  
+
+1. **增加 max.poll.interval.ms 值的大小**：将该参数调大至合理值，比如默认的 300s；
+2. **设置分区拉取阈值**：通过用外部循环不断拉取的方式，实现客户端的持续拉取效果。消费者每次调用 poll 方法会拉取一批数据，可以通过设置 **max.poll.records** 消费者参数，控制每次拉取消息的数量，从而减少每两次 poll 方法之间的拉取时间。
+
+此外，**再均衡可能会导致消息的重复消费现象**。消费者每次拉取消息之后，都需要将偏移量提交给消费组，如果设置了自动提交，则这个过程在消费完毕后自动执行偏移量的提交；如果设置手动提交，则需要在程序中调用 <code>consumer.commitSync()</code> 方法执行提交操作。  
+反过来，如果消费者没有将偏移量提交，那么下一次消费者重新与 Broker 相连之后，该消费者会**从已提交偏移量处开始消费**。问题就在这里，如果处理消息时间较长，消费者被消费组剔除，那么**提交偏移量出错**。消费者踢出消费组后触发了再均衡，分区被分配给其他消费者，其他消费者如果消费该分区的消息时，由于之前的消费者已经消费了该分区的部分消息，所以这里出现了重复消费的问题。
+
+解决该问题的方式在于拉取后的处理。poll 到消息后，消息处理完一条就提交一条，如果出现提交失败，则马上跳出循环，Kafka 触发再均衡。这样的话，重新分配到该分区的消费者也不会重复消费之前已经处理过的消息。代码如下：
+
+```java
+        while (isRunning) {
+            ConsumerRecords<KEY, VALUE> records = consumer.poll(100);
+            if (records != null && records.count() > 0) {
+
+                for (ConsumerRecord<KEY, VALUE> record : records) {
+                    // 处理一条消息
+                    dealMessage(bizConsumer, record.value());
+                    try {
+                        // 消息处理完毕后，就直接提交
+                        consumer.commitSync();
+                    } catch (CommitFailedException e) {
+                        // 如果提交失败，则日志记录，并跳出循环
+                        // 跳出循环后，Kafka Broker 端会触发再均衡
+                        logger.error("commit failed, will break this for loop", e);
+                        break;
+                    }
+                }
+            }
+        }
+```
 
 ## 八. Kafka 消息积压
 
@@ -364,6 +410,9 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 无论是哪种消息队列，造成重复消费原因其实都是类似的。正常情况下，消费者在消费消息的时候，消费完毕后，会发送一个确认消息给消息队列，消息队列就知道该消息被消费了，就会将该消息从消息队列中删除。只是不同的消息队列发出的确认消息形式不同（例如 RabbitMQ 是发送一个 ACK 确认消息，RocketMQ 是返回一个 CONSUME\_SUCCESS 成功标志），kafka 是通过**<font color=red>提交 offset 的方式</font>**让消息队列知道自己已经消费过了。
 
 造成重复消费的原因，就是**因为网络传输等等故障**，确认信息没有传送到消息队列，导致消息队列不知道自己已经消费过该消息了，再次将消息分发给其他的消费者。
+
+> 注：关于重复消费，还有部分与第七章 Kafka 再均衡相关的内容。  
+> 参考地址：[《记一次线上kafka一直rebalance故障》](https://www.jianshu.com/p/271f88f06eb3)
 
 如何解决？这个问题针对业务场景来答，分以下三种情况：
 
