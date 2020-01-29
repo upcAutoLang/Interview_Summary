@@ -244,14 +244,58 @@ ConsumerCoordinator 与 GroupCoordinator 之间最重要的职责就是负责执
 - 消费组对应的 GroupCoordinator 节点发生了变更；
 - 任意主题或主题分区数量发生变化；
 
-### 7.2 消费者再均衡阶段
+### 7.2 再均衡策略
 
-#### 7.2.1 阶段一：寻找 GroupCoordinator
+> 参考地址：  
+> [《kafka消费者分组消费的再平衡策略》](https://cloud.tencent.com/developer/article/1379277)  
+> 《深入理解 Kafka 核心设计与实践原理》7.1 章节
+
+Kafka 提供了三种再均衡策略（即分区分配策略），默认使用 **RangeAssignor**。
+
+> 注：Kafka 提供消费者客户端参数 <code>partition.assignment.strategy</code> 设置 Consumer 与订阅 Topic 之间的分区分配策略。
+
+### 7.2.1 RangeAssignor
+
+RangeAssignor 分配策略，原理是**按照消费者总数和分区总数进行整除运算**，获得一个跨度，然后将分区按照跨度进行平均分配。  
+对于**分区数可以整除消费组内消费者数量**的情况（比如一个消费组内有 2 个消费者，某个 Topic 中有 4 个分区），这种方法的分配特性较好。但如果分区数除以消费组的消费者数量有余数（比如一个消费组内有 2 个消费者，某个 Topic 有 3 个分区），则会分配不均。这种情况下，如果类似情形扩大，可能会出现消费者过载情况。
+
+> 注：算法如下：  
+> 
+> 1. 将目标 Topic 下的所有 Partirtion 排序，存于 **TP**；
+> 2. 对某 Consumer Group 下所有 Consumer 按照名字根据字典排序，存于 **CG**；此外，第 i 个 Consumer 记为 **Ci**；
+> 3. <code>N = size(TP) / size(CG)</code>
+> 4. <code>R = size(TP) % size(CG)</code>
+> 5. Ci 获取的分区起始位置：<code>N * i + min(i, R)</code>
+> 6. Ci 获取的分区总数：<code>N + (if (i + 1 > R) 0 else 1)</code>
+
+### 7.2.2 RoundRobinAssignor
+
+RoundRobinAssignor 分配策略，原理是对某个消费组的所有消费者订阅的**所有 Topic 的所有分区**进行**字典排序**，然后用轮询方式将分区逐个分配给各消费者。  
+合理使用这种分配策略，最主要的要求是：**消费组内所有消费者都有相同的订阅 Topic 集合**。如果消费组内消费者订阅信息不同，则执行分区分配的时候就不能实现完全的轮询，可能导致分区分配不均的情况。
+
+> 注：算法如下：
+> 
+> 1. 对所有 Topic 的所有分区按照 **Topic + Partition** 转 String 后的 Hash 计算，进行排序；
+> 2. 对消费者按照字典排序；
+> 3. 轮询方式，将所有分区分配给消费者；
+
+### 7.2.3 StickyAssignor
+
+StickyAssignor 分配策略注重两点：
+
+- 分配尽量均匀；
+- 分配尽量与上一次分配的相同；
+
+从 StickyAssignor 的名称可以看出，该分配策略尽可能的保持“黏性”。在发生分区重分配后，尽可能让前后两次分配相同，减少系统的损耗。虽然该策略的代码实现很复杂，但通常从结果上看通常比其他两种分配策略更优秀。
+
+### 7.3 消费者再均衡阶段
+
+#### 7.3.1 阶段一：寻找 GroupCoordinator
 
 消费者需要确定它所述消费组对应 GroupCoordinator 所在 broker，并创建网络连接。向集群中负载最小的节点发送 **FindCoordinatorRequest**；  
 Kafka 收到 FindCoordinatorRequest 后，根据请求中包含的 groupId 查找对应的 GroupCoordinator 节点。
 
-#### 7.2.2 阶段二：加入消费组
+#### 7.3.2 阶段二：加入消费组
 
 消费者找到消费组对应的 GroupCoordinator 之后，进入加入消费组的阶段。消费者会向 GroupCoordinator 发送 **JoinGroupRequest** 请求。每个消费者发送的 GroupCoordinator 中，都携带了**各自提案的分配策略与订阅信息**。
 
@@ -266,7 +310,7 @@ Kafka Broker 收到请求后进行处理。
 
 Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者。JoinGroupResponse 回执中包含着 GroupCoordinator 投票选举的结果，在这些分别给各个消费者的结果中，只有**给 leader 消费者的回执中包含各个消费者的订阅信息**。
 
-#### 7.2.3 阶段三：同步阶段
+#### 7.3.3 阶段三：同步阶段
 
 加入消费者的结果通过响应返回给各个消费者，消费者接收到响应后，开始准备实施具体的分区分配。上一步中只有 leader 消费者收到了包含各消费者订阅结果的回执信息，所以**需要 leader 消费者主导转发同步分配方案**。转发同步分配方案的过程，就是**同步阶段**。  
 同步阶段，leader 消费者是**通过“中间人” GroupCoordinator 进行**的。各个消费者向 GroupCoordinator 发送 SyncGroupRequest 请求，其中**只有 leader 消费者发送的请求中包含相关的分配方案**。Kafka 服务端收到请求后交给 GroupCoordinator 处理。处理过程有：
@@ -276,7 +320,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 
 各消费者收到分配方案后，会开启 ConsumerRebalanceListener 中的 onPartitionAssigned() 方法，**开启心跳任务**，与 GroupCoordinator 定期发送心跳请求 HeartbeatRequest，保证彼此在线。
 
-#### 7.2.4 阶段四：心跳阶段
+#### 7.3.4 阶段四：心跳阶段
 
 进入该阶段后的消费者，已经属于进入正常工作状态了。消费者通过向 GroupCoordinator 发送心跳，来维持它们与消费组的从属关系，以及对 Partition 的所有权关系。  
 心跳线程是一个独立的线程，可以在轮询消息空档发送心跳。如果一个消费者停止发送心跳的时间比较长，那么**整个会话被判定为过期**，GroupCoordinator 会认为这个消费者已经死亡，**则会触发再均衡行为**。
@@ -287,7 +331,7 @@ Kafka 处理完数据后，将响应 JoinGroupResponse 返回给各个消费者�
 2. 参数 max.poll.interval.ms 是 poll() 方法调用之间的最大延迟，如果在该时间范围内，poll() 方法没有调用，那么消费者被视为失败，触发再均衡；
 3. 消费者可以主动发送 LeaveGroupRequest 请求，主动退出消费组，也会触发再均衡。
 
-### 7.3 频繁再均衡
+### 7.4 频繁再均衡
 
 > 参考地址：[《记一次线上kafka一直rebalance故障》](https://www.jianshu.com/p/271f88f06eb3)
 
@@ -495,7 +539,39 @@ consumer.commitOffset();
 如果 log.dirs 参数只配置了一个目录，那么分配到各个 Broker 上的分区肯定只能在这个目录下创建文件夹用于存放数据。  
 但是如果 log.dirs 参数配置了多个目录，那么 Kafka 会在哪个文件夹中创建分区目录呢？答案是：Kafka 会在含有分区目录最少的文件夹中创建新的分区目录，分区目录名为 Topic名+分区ID。注意，是分区文件夹总数最少的目录，而不是磁盘使用量最少的目录！也就是说，如果你给 log.dirs 参数新增了一个新的磁盘，新的分区目录肯定是先在这个新的磁盘上创建直到这个新的磁盘目录拥有的分区目录不是最少为止。
 
-## 十三. 消费者负载均衡策略
+## 十三. Kafka 负载均衡策略
+
+### 13.1 分区器
+
+分区器是**生产者层面的负载均衡**。Kafka 生产者生产消息时，根据分区器将消息投递到指定的分区中，所以 Kafka 的负载均衡很大程度上依赖于分区器。  
+Kafka 默认的分区器是 Kafka 提供的 DefaultPartitioner。它的分区策略是根据 Key 值进行分区分配的：
+
+- **如果 key 不为 null**：对 Key 值进行 Hash 计算，从**所有分区**中根据 Key 的 Hash 值计算出一个分区号；拥有相同 Key 值的消息被写入同一个分区；
+- **如果 key 为 null**：消息将以**轮询**的方式，在**所有可用分区**中分别写入消息。
+
+如果不想使用 Kafka 默认的分区器，用户可以实现 Partitioner 接口，自行实现分区方法。  
+
+> 注：  
+> 1. 在笔者的理解中，分区器的负载均衡与顺序性有着一定程度上的矛盾。
+> 	- 负载均衡的目的是**将消息尽可能平均分配**，对于 Kafka 而言，就是尽可能将消息平均分配给所有分区；
+> 	- 如果使用 Kafka 保证顺序性，则需要利用到 Kafka 的**分区顺序性**的特性。
+> 	- 对于需要保证顺序性的场景，通常会利用 Key 值实现分区顺序性，那么所有 Key 值相同的消息就会进入同一个分区。这样的情况下，对于大量拥有相同 Key 值的消息，会涌入同一个分区，导致一个分区消息过多，其他分区没有消息的情况，即与负载均衡的思想相悖。
+> 2. **并非分区数量越多，效率越高**：
+> 	- Topic 每个 partition 在 Kafka 路径下都有一个自己的目录，该目录下有两个主要的文件：**base\_offset.log** 和 **base\_offset.index**。Kafka 服务端的 ReplicaManager 会为每个 Broker 节点保存每个分区的这两个文件的文件句柄。所以如果分区过多，ReplicaManager 需要保持打开状态的文件句柄数也就会很多。
+> 	- 每个 Producer, Consumer 进程都会为分区缓存消息，如果分区过多，缓存的消息越多，占用的内存就越大；
+> 	- n 个分区有 1 个 Leader，(n-1) 个 Follower，如果运行过程中 Leader 挂了，则会从剩余 (n-1) 个 Followers 中选举新 Leader；如果有成千上万个分区，那么需要很长时间的选举，消耗较大的性能。
+
+### 13.2 再均衡
+
+再均衡是**消费者层面的负载均衡**，具体见前面的讲解内容。
+
+## 十四. 磁盘存储
+
+### 14.1 页缓存
+
+### 14.2 零拷贝 (Zero-Copy)
+
+
 
 一个消费者组中的一个分片对应一个消费者成员，他能保证每个消费者成员都能访问，如果组中成员太多会有空闲的成员
 
