@@ -432,15 +432,353 @@ TERMINATED 状态标志着一个线程的结束，处于 TERMINATED 状态的线
 - 线程运行抛出异常；
 - JVM Crash，所有线程全部结束；
 
-# 七. Java中nio和io的区别？常用的类有哪些？
+# 七. CAS 原理
+> 参考地址：  
+> [《JAVA并发编程: CAS和AQS》](https://blog.csdn.net/u010862794/article/details/72892300)  
+> [《面试必问的CAS，你懂了吗？》](https://blog.csdn.net/v123411739/article/details/79561458)  
+
+**CAS (Compare And Swap)**，即比较并交换，是**解决多线程并行情况下使用锁造成性能损耗**的一种机制。在 JAVA 中，<code>sun.misc.Unsafe</code> 类提供了**硬件级别的原子操作**来实现 CAS。 java.util.concurrent 包下的大量类 (<code>AtomicInteger, AtomicBoolean, AtomicLong, ...</code> )都使用了这个 Unsafe.java 类的 CAS 操作。至于 Unsafe.java 的具体实现这里就不讨论了。下面以 AtomicInteger.java 的部分实现来大致讲解下这些原子类的实现。
+
+> 注：**CAS 与 AQS 的关系与区别**：  
+> CAS 是一种**解决并发问题的思想**，也就是**先比较后替换**，JUC 通过自旋执行 CAS 操作实现线程安全的状态更新。  
+> AQS 是 Java 并发包的一个底层框架，是可重入锁 (ReentrantLock) 与共享锁（比如 CountDownLatch, CyclicBarrier 等）的基础。关于 Lock 与 AQS，Lock 面向用户，AQS 面向 Lock，也就是说 AQS 为各种 Lock 提供了底层的支持，AQS 的最核心原理之一就是利用 CAS 更新同步状态。
+
+```java
+public class AtomicInteger extends Number implements java.io.Serializable {
+    private static final long serialVersionUID = 6214790243416807050L;
+
+    // setup to use Unsafe.compareAndSwapInt for updates
+    private static final Unsafe unsafe = Unsafe.getUnsafe();
+
+    // 初始 int 大小
+    private volatile int value;
+    // 省略了部分代码...
+
+    // 返回旧值，并设置新值为 newValue
+    public final int getAndSet(int newValue) {
+        /**
+         * 这里使用 for 循环不断通过 CAS 操作来设置新值
+         * CAS 实现和加锁实现的关系有点类似乐观锁和悲观锁的关系
+         */
+        for (;;) {
+            int current = get();
+            if (compareAndSet(current, newValue))
+                return current;
+        }
+    }
+
+    // 原子的设置新值为 update, expect 为期望的当前的值
+    public final boolean compareAndSet(int expect, int update) {
+        return unsafe.compareAndSwapInt(this, valueOffset, expect, update);
+    }
+
+    // 获取当前值 current，并设置新值为 current+1
+    public final int getAndIncrement() {
+        for (;;) {
+            int current = get();
+            int next = current + 1;
+            if (compareAndSet(current, next))
+                return current;
+        }
+    }
+
+    // 此处省略部分代码，余下的代码大致实现原理都是类似的
+}
+```
+
+核心系列方法 <code>compareAndSet</code> 包含三个操作数——内存位置 (V)、预期原值 (A) 和新值 (B)。CAS 有效地说明了“**我认为位置 V 应该包含值 A；如果包含该值，则将 B 放到这个位置；否则不做任何更改，只告诉我这个位置现在的值即可**。无论哪种情况，它都会在 CAS 指令之前返回该位置的值。 
+
+在竞争不是特别激烈的时候，使用该包下的原子操作性能比使用 synchronized 关键字的方式高效的多（查看 <code>getAndSet(int newValue)</code> 源码，可知如果资源竞争十分激烈的话，这个 for 循环可能换持续很久都不能成功跳出。不过这种情况更应该考虑降低资源竞争)。
+
+> 注：通常使用 AtomicInteger，会用到它的 <code>getAndIncrement()</code> 方法作计数器。
+
+CAS 最主要的运用，就是在 JUC 中的 <code>AbstractQueuedSynchronizer</code>，即 AQS，它是 Java 中多种锁实现的父类。该类核心**同步队列**的入队操作是一种乐观锁实现，多线程情况下对头节点、尾节点操作都有可能失效，失效后 CAS 会再次尝试，直到尝试成功。比如 <code>AbstractQueuedSynchronizer # enq(Node node)</code> 方法：
+
+```java
+    private Node enq(final Node node) {
+        for (;;) {
+            Node t = tail;
+            if (t == null) { // Must initialize
+                if (compareAndSetHead(new Node()))
+                    tail = head;
+            } else {
+                node.prev = t;
+                if (compareAndSetTail(t, node)) {
+                    t.next = node;
+                    return t;
+                }
+            }
+        }
+    }
+```
+
+此外，CAS 仍然有三个缺点：
+
+1. **循环时间开销大**
+	- 从 <code>getAndAddInt()</code> 源码中可以看到，如果 CAS 执行返回 false，那么会一直执行尝试，如果 CAS 长时间不成功，可能会有比较大的 CPU 资源开销；
+2. **只保证一个共享变量原子操作**
+	- 对于多个共享变量，无法使用 CAS 方式保证操作原子性，此时应该使用锁 (synchronized, Lock) 保证原子性；
+3. **ABA 问题**
+	- **ABA 问题**：如果内存地址 V 上的值在读取时为 A，准备赋值的时候检查它的值也为 A，但也**不能保证在这期间没有被其他线程改变过**；
+	- 在使用 CAS 之前要考虑好一致性的效果，是需要达到最终一致性，还是完全一致性。如果需要解决 ABA 问题，Java 中提供了 <code>AtomicStampedReference</code> / <code>AtomicMarkableReference</code> 来处理会发生 ABA 问题的场景，它们的主要思想是在对象中额外再增加一个版本号的标记，标识对象是否有过变更；此外也可以改用传统互斥同步。
+4. **不适用于高并发场景**
 
 # 八. AQS 原理
 
+> 参考地址：  
+> [《Java并发-AQS及各种Lock锁的原理》](https://blog.csdn.net/zhangdong2012/article/details/79983404)  
+> [《JAVA并发编程: CAS和AQS》](https://blog.csdn.net/u010862794/article/details/72892300)  
+> [《Java并发之AQS详解》](https://www.cnblogs.com/waterystone/p/4920797.html)
 
+## 8.1 AQS 简介
+
+**AQS (AbustactQueuedSynchronizer)** 是 Java 提供的底层同步工具类，主要思想是用一个 int 类型的变量表示**同步状态**，以及一个双链表形式的**同步队列**，并提供了一系列的 **CAS (Compare And Swap)** 操作来管理这个同步状态。  
+AQS 的主要作用是为 Java 中的并发同步组件提供统一的底层支持，例如 <code>ReentrantLock</code>，<code>CountDownLatch</code> 就是基于 AQS 实现的，实现方法是通过继承 AQS 实现其模版方法，然后将子类作为同步组件的内部类。
+
+## 8.2 AQS 基本方法
+
+AQS 有若干基本方法：
+
+```java
+boolean tryAcquire(int arg);
+boolean tryRelease(int arg);
+int tryAcquireShared(int arg);
+boolean tryReleaseShared(int arg);
+boolean isHeldExclusively();
+```
+
+以上方法**不需要全部实现**，根据获取的锁的种类可以选择实现不同的方法。支持**独占（排他）锁**的同步器，比如 ReentrantLock，应该实现 **tryAcquire, tryRelease, isHeldExclusively** 方法；而作为**共享锁**的同步器，比如 CountDownLatch，应该实现 **tryAcquireShared, tryReleaseShared** 方法。
+
+## 8.3 同步队列
+
+同步队列是 AQS 很重要的组成部分，它是一个双端队列，遵循 FIFO 原则，主要作用是**存放在锁上阻塞的线程**。比如可重入锁 ReentrantLock 的 <code>lock()</code>, <code>unlock()</code> 方法，分别实现了线程挂起、释放，本质上就是将线程存入同步队列、弹出同步队列的操作。  
+
+### 8.3.1 独占锁 - 获取锁
+
+对于独占锁 (如 ReentrantLock)，需要实现 **tryAcquire, tryRelease, isHeldExclusively** 方法。当一个线程尝试获取锁时，如果已经被占用，那么当前线程就会被**构造成一个 Node 节点，加入到同步队列的尾部**。如下图所示：
+
+![AQS Node 加入队列尾部](/pic/AQS_Node加入队列尾部.png)
+
+线程尝试获取锁的操作，本质上就是将当前线程加入到同步队列尾部的操作。步骤如下：
+
+1. 调用 AQS 的入口方法 <code>acquire(int arg)</code>；
+2. 调用 AQS 的模板方法 <code>tryAcquire(int arg)</code> 尝试获取锁；如果获取锁成功，则不进入同步队列；
+3. 如果尝试获取锁失败，则将当前线程构造成一个 Node 节点，通过 CAS 将其加入到同步队列尾部，然后该 Node 对应的线程进入**自旋状态**；
+	- 自旋状态下，判断两个条件：
+		- 同步队列的前驱节点 prev 是否为头结点 head；
+		- <code>tryAcquire()</code> 是否获取成功；
+	- 两个条件同时成立，则将当前线程节点设置为头结点；
+	- 不同时成立，使用 <code>LockSupport.park(this)</code> 方法将当前线程挂起，等待 prev 节点的唤醒；
+
+![AQS 队列 Node 状态](./pic/AQS_Node队列Node状态.png)
+
+### 8.3.2 独占锁 - 释放锁
+
+队列的头节点是成功获取锁的节点，对于独占锁 (如 ReentrantLock)，当头节点线程释放锁时，会唤醒后面的节点并释放当前头节点的引用。如下图所示：
+
+![AQS Node 弹出队列头部](./pic/AQS_Node弹出队列头部.png)
+
+线程释放锁的操作，本质上就是将当前线程从同步队列头部弹出的操作。步骤如下：
+
+1. 调用 AQS 的入口方法 <code>release(int arg)</code>；
+2. 调用 AQS 的模板方法 <code>tryRelease(int arg)</code> 尝试释放同步状态；
+3. 将当前节点的下一个节点作为头结点 head；
+4. 通过 <code>LockSupport.unpark(currentNode.next.thread)</code> 唤醒后继节点（即线程入队的步骤 3）；
+
+### 8.3.3 共享锁 - 获取锁
+
+<code>CountDownLatch</code>, <code>CyclicBarrier</code>, <code>Semaphore</code> 都属于**共享锁**的同步器，应该实现 **tryAcquireShared, tryReleaseShared** 方法。获取锁流程如下：
+
+1. 调用 AQS 的入口方法 <code>acquireShared(int arg)</code>；
+2. 进入 AQS 的模板方法 <code>tryAcquireShared(int arg)</code>，获取同步状态；
+	- 返回值 >= 0，则说明同步状态有剩余，获取锁成功，直接返回；
+	- 返回值 < 0，则说明获取同步锁失败，向队尾添加共享类型的 Node 节点 (Node.SHARED)，该 Node 对应的线程进入**自旋状态**；
+3. 自旋状态下，判断两个条件：
+		- 同步队列的前驱节点 prev 是否为头结点 head；
+		- <code>tryAcquire()</code> 是否获取成功；
+	- 两个条件同时成立，则将当前线程节点设置为头结点，**<font color=red>并唤醒所有后继节点</font>**，所有后继节点重新进入尝试获取锁的状态；
+	- 不同时成立，使用 <code>LockSupport.park(this)</code> 方法将当前线程挂起，等待 prev 节点的唤醒；
+
+需要注意的是，自旋状态下独占锁与共享锁判断的条件相同，但执行动作不同：独占锁只将当前节点设置为头结点，共享锁在此之外还唤醒所有的后继节点。
+
+### 8.3.4 共享锁 - 释放锁
+
+1. 调用 <code>releaseShared(int arg)</code> 模板方法释放同步状态；
+2. 如果释放成功，则遍历整个队列，使用 <code>LockSupport.unpart(nextNode.thread)</code> 唤醒所有后继节点；
+
+### 8.3.5 独占锁与共享锁的区别
+
+1. 同步状态值
+	- 独占锁的同步状态值 <code>state = 1</code>，即同一时刻只能有一个线程成功获取同步状态；
+	- 共享锁的同步状态 <code>state \> 1</code>，取值由上层同步组件确定；此外，共享锁会出现多个线程同时成功获取同步状态的情况；
+2. 头结点运行后操作
+	- 独占锁的同步队列中，Node 节点运行完毕后，释放该节点后面一个后继节点（即直接后继节点）；
+	- 共享锁的同步队列中，Node 节点运行完毕后，释放该节点后面所有后继节点；
+
+## 8.4 AQS 实现原理
+
+## 8.5 可重入锁 (ReentrantLock) 实现原理
+
+**重入锁**指的是当前线程成功获取锁后，如果再次访问该临界区，则不会对自己产生互斥行为。Java 中的 <code>ReentrantLock</code> 和 <code>synchronized</code> 关键字都是可重入锁，synchronized 由 JVM 实现可重入性，ReentrantLock 的可重入性基于 AQS 实现。此外，ReentrantLock 还提供**公平锁**和**非公平锁**两种模式，默认创建非公平锁。  
+重入锁的基本原理，是**判断上次获取锁的线程是否为当前线程**，如果是则可再次进入临界区，如果不是，则阻塞。由于 ReentrantLock 是基于 AQS 实现的，底层通过操作同步状态来获取锁。
+
+### 8.5.1 非公平锁实现
+
+下面看一下非公平锁的实现逻辑代码如下：
+
+```java
+    final boolean nonfairTryAcquire(int acquires) {
+        // 获取当前线程
+        final Thread current = Thread.currentThread();
+        // 通过 AQS 获取同步状态
+        int c = getState();
+        // 同步状态为 0，说明临界区处于无锁状态，
+        if (c == 0) {
+            // 修改同步状态，即加锁
+            if (compareAndSetState(0, acquires)) {
+                // 将当前线程设置为锁的 owner
+                setExclusiveOwnerThread(current);
+                return true;
+            }
+        }
+        // 如果临界区处于锁定状态，且上次获取锁的线程为当前线程
+        else if (current == getExclusiveOwnerThread()) {
+            // 则递增同步状态
+            int nextc = c + acquires;
+            if (nextc < 0) // overflow
+                throw new Error("Maximum lock count exceeded");
+            setState(nextc);
+            return true;
+        }
+        return false;
+    }
+```
+
+非公平锁是指在锁状态为可用时，所有等待该锁释放的线程有相同的权利争抢该锁，与线程等待时间长短无关。只要同步状态 <code>state = 0</code> 任意调用 **lock()** 方法，都有可能获取到锁。
+
+> 注：在 compareAndSetState 方法中，使用了 CAS 的比较交换方法。关于 CAS 见其他部分的讲解。
+
+### 8.5.2 公平锁实现
+
+公平锁是指锁状态可用时，对于所有正在等待该锁释放的线程，按照等待时间进行排序，等待时间最长的线程获取该锁。公平锁与非公平锁的实现逻辑基本相同，逻辑不同的地方主要是在获取到线程状态 <code>state = 0</code> 时的处理。关键代码如下：
+
+```java
+    if (c == 0) {
+        // 此处为公平锁的核心，即判断同步队列中当前节点是否有前驱节点
+        if (!hasQueuedPredecessors() &&
+                compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(current);
+            return true;
+        }
+    }
+```
+
+代码中的 <code>hasQueuedPredecessors()</code> 方法是关键区别，用来判断是否拥有前驱节点。对于公平锁来说，如果同步队列中拥有前驱节点，说明在该 Node 对应的线程之前，还有其他线程存入了同步队列中，那么就不满足获取该锁的条件。
+
+## 8.6 读写锁 (ReadWriteReentrantLock) 实现原理
+
+Java 提供了一个基于 AQS 到读写锁实现 ReentrantReadWriteLock，该读写锁到实现原理是：将同步变量 state **按照高 16 位和低 16 位**进行拆分，读锁为高 16 位，是共享锁；写锁是低 16 位，是独占锁。如下图所示。
+
+![Java 读写锁划分方式](./pic/Java读写锁划分方式.png)
+
+### 8.6.1 写锁
+
+写锁是一个**独占锁**，获取锁的主要逻辑在 <code>ReentrantReadWriteLock # tryAcquire(int arg)</code> 中实现：
+
+```java
+    protected final boolean tryAcquire(int acquires) {
+        Thread current = Thread.currentThread();
+        int c = getState();
+        int w = exclusiveCount(c);
+        if (c != 0) {
+            if (w == 0 || current != getExclusiveOwnerThread())
+                return false;
+            if (w + exclusiveCount(acquires) > MAX_COUNT)
+                throw new Error("Maximum lock count exceeded");
+            // Reentrant acquire
+            setState(c + acquires);
+            return true;
+        }
+        if (writerShouldBlock() ||
+                !compareAndSetState(c, c + acquires))
+            return false;
+        setExclusiveOwnerThread(current);
+        return true;
+    }
+```
+
+1. 获取同步状态，同时从同步状态中分离出低 16 位的写锁状态；
+2. 如果同步状态不为 0，说明当前状态下存在读锁或者写锁；
+3. 如果存在读锁，那么不能获取写锁；这样是为了保证对读的可见性；
+	- 存在读锁的判断：<code>c != 0 && w == 0</code>
+4. 如果当前线程不是写锁的线程，不能获取写锁；
+5. 上面的判断全部通过，则用 CAS 将锁同步状态进行修改，最后将当前线程设置为写锁的获取线程；
+	- 修改同步状态，是通过修改同步状态低 16 位的写锁完成的；
+
+写锁的释放逻辑与独占锁基本相同。代码如下：
+
+```java
+    protected final boolean tryRelease(int releases) {
+        if (!isHeldExclusively())
+            throw new IllegalMonitorStateException();
+        int nextc = getState() - releases;
+        boolean free = exclusiveCount(nextc) == 0;
+        if (free)
+            setExclusiveOwnerThread(null);
+        setState(nextc);
+        return free;
+    }
+```
+
+释放过程中，不断减少读锁的同步状态，直到读锁同步状态为 0 时，写锁完全被释放。
+
+### 8.6.2 读锁
+
+读锁是一个**共享锁**，获取读锁的步骤如下：
+
+```java
+    protected final int tryAcquireShared(int unused) {
+        Thread current = Thread.currentThread();
+        int c = getState();
+        if (exclusiveCount(c) != 0 &&
+                getExclusiveOwnerThread() != current)
+            return -1;
+        int r = sharedCount(c);
+        if (!readerShouldBlock() &&
+                r < MAX_COUNT &&
+                compareAndSetState(c, c + SHARED_UNIT)) {
+            if (r == 0) {
+                firstReader = current;
+                firstReaderHoldCount = 1;
+            } else if (firstReader == current) {
+                firstReaderHoldCount++;
+            } else {
+                HoldCounter rh = cachedHoldCounter;
+                if (rh == null || rh.tid != getThreadId(current))
+                    cachedHoldCounter = rh = readHolds.get();
+                else if (rh.count == 0)
+                    readHolds.set(rh);
+                rh.count++;
+            }
+            return 1;
+        }
+        return fullTryAcquireShared(current);
+    }
+```
+
+1. 获取当前同步状态；
+2. 计算高 16 位读锁状态 r；
+3. 异常判断：如果 <code>r + 1</code> 大于获取到读锁的最大值，则抛出异常；
+4. 如果存在写锁，而且当前线程不是写锁的获取者，则获取读锁失败；
+5. 如果上述所有判断都通过，则通过 CAS 重新设置读锁同步状态；
+
+读锁的释放与写锁类似，不断的释放写锁状态，直到为 0，表示没有线程持有读锁。
 
 # 九. Java里面 的同步锁了解吗？ CountDownLaunch和Cylicbarrior的区别，分别在什么场景下使用？
 
 在java 1.5中，提供了一些非常有用的辅助类来帮助我们进行并发编程，比如CountDownLatch，CyclicBarrier和Semaphore，今天我们就来学习一下这三个辅助类的用法。
+
+> 注：同步锁的原理见 AQS 部分；
 
 ## 1. CountDownLatch用法
 
@@ -1311,3 +1649,8 @@ public class Main {
     }
 }
 ```
+
+
+
+# 十九. Java中nio和io的区别？常用的类有哪些？
+
