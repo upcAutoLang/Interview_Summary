@@ -557,7 +557,7 @@ boolean isHeldExclusively();
 
 对于独占锁 (如 ReentrantLock)，需要实现 **tryAcquire, tryRelease, isHeldExclusively** 方法。当一个线程尝试获取锁时，如果已经被占用，那么当前线程就会被**构造成一个 Node 节点，加入到同步队列的尾部**。如下图所示：
 
-![AQS Node 加入队列尾部](/pic/AQS_Node加入队列尾部.png)
+![AQS Node 加入队列尾部](./pic/AQS_Node加入队列尾部.png)
 
 线程尝试获取锁的操作，本质上就是将当前线程加入到同步队列尾部的操作。步骤如下：
 
