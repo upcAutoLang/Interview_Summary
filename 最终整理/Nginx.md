@@ -170,48 +170,46 @@ public void weightRandom(){
 
 ### 6.2.2 轮询及加权轮询
 
-轮询 (Round Robbin) 当服务器群中各服务器的处理能力相同时，且每笔业务处理量差异不大时，最适合使用这种算法。 轮循，按公约后的权重设置轮循比率。存在慢的提供者累积请求问题，比如：第二台机器很慢，但没挂，当请求调到第二台时就卡在那，久而久之，所有请求都卡在调到第二台上。
+轮询及加权轮询 (Round Robin) 算法是一种**平滑权重轮询算法**。普通的权重轮询方法有时会发生某个节点突然被连续频繁选中，流量暴增的情况，而平滑权重轮询的 RoundRobin 算法的优点是将连续频繁的节点分配更加均匀。通常的 RoundRobin 算法比较简单，总共 N 个服务节点，传来一个 key 值，计算：
 
 ```java
-private Integer pos = 0;
-public void roundRobin(){
-        List<String> keyList = new ArrayList<String>(serverMap.keySet());
-        String server = null;
-        synchronized (pos){
-            if(pos > keyList.size()){
-                pos = 0;
-            }
-            server = keyList.get(pos);
-            pos++;
-        }
-        System.out.println(server);
-    }
+int n = hash(key) % N;
 ```
 
-加权轮询 (Weighted Round Robbin) 为轮询中的每台服务器附加一定权重的算法。比如服务器1权重1，服务器2权重2，服务器3权重3，则顺序为1-2-2-3-3-3-1-2-2-3-3-3- ......
+以 Dubbo 的 RoundRobin 负载均衡算法为例，它参考了 Nginx 的 RoundRobin 算法，有三个核心参数：
 
-```java
-public void weightRoundRobin(){
-        Set<String> keySet = serverMap.keySet();
-        List<String> servers = new ArrayList<String>();
-        for(Iterator<String> it = keySet.iterator();it.hasNext();){
-            String server = it.next();
-            int weithgt = serverMap.get(server);
-            for(int i=0;i<weithgt;i++){
-               servers.add(server);
-            }
-        }
-        String server = null;
-        synchronized (pos){
-            if(pos > keySet.size()){
-                pos = 0;
-            }
-            server = servers.get(pos);
-            pos++;
-        }
-        System.out.println(server);
-    }
-```
+1. **int weight**：对 Invoker 设定的权重；
+2. **AtomicLong current**：考虑到并发场景下的某个 Invoker 会被同时选中，表示该节点被**所有线程选中的权重总和**；
+3. **long lastUpdate**：最后一次更新时间；
+
+每次请求进行负载均衡时，算法操作如下：
+
+1. 遍历所有可调用 Invoker 列表：
+	- 根据 <code>weight</code> 值更新当前 <code>current</code> 值：<code>current = current + weight;</code>
+	- 累加每个 Invoker 的权重<code> weight</code> 到总权重 <code>totalWeight</code>；
+2. 遍历结束后，选取最大的 <code>current</code> 值作为本次要选的节点，同时对其更新，减去 <code>totalWeight</code>。
+
+比如有三个 Invoker 节点 **A, B, C**，它们权重分别为 **[A, B, C]=[4, 2, 1]**，初始 current 值都为 0，所以平滑轮询过程如下表所示：
+
+|请求次数|选中前 Invoker 的 current 值|被选中节点|选中后 Invoker 的 current 值|
+|:--|:--|:--|:--|
+|1|[4,2,1]|A|[-3,2,1]|
+|2|[1,4,2]|B|[1,-3,2]|
+|3|[5,-1,3]|A|[-2,-1,3]|
+|4|[2,1,4]|C|[2,1,-3]|
+|5|[6,3,-2]|A|[-1,3,-2]|
+|6|[3,5,-1]|B|[3,-2,-1]|
+|7|[7,0,0]|A|[0,0,0]|
+
+对上述过程进行解释，以第一次到第二次请求过程为例，经过了如下几次计算：
+
+1. 首先初始值为 **[A, B, C] = [0, 0, 0]**，对每个节点分别加上权重 **[4, 2, 1]**，即第一次请求时的 <code>current</code> 值分别为 **[A, B, C] = [4, 2, 1]**；
+2. 第一次请求中，最大的 <code>current</code> 节点为 **A=4**，所以第一次请求选中 A 节点；
+3. 第一次请求选中后，更新三个节点的 <code>current</code> 值：对此次被选中的 A 节点减去总权重值 7，此时<code>current</code> 值分别为 **[A, B, C] = [-3, 2, 1]**；
+4. 第二次请求来临，再对每个节点分别加上权重 **[4, 2, 1]**，第二次请求时的 <code>current</code> 值分别为 **[A, B, C] = [1, 4, 2]**；
+5. 此后重复步骤 2, 3, 4；
+
+由上表结果，每 7 次循环中，A 被选中了 4 次，B 被选中了 2 次，C 被选中了 1 次，满足 4:2:1 的权重分配，同时 A 节点也没有被连续分配。  
 
 ### 6.2.3 最小连接及加权最小连接
 
