@@ -330,13 +330,133 @@ Dubbo 的一致性 Hash 负载均衡，将**接口名 + 方法名**作为 Key �
 每次请求进来后，进行上述的 Key 值运算，每次请求的参数都不同，但是由于 TreeMap 是有序的树形结构，所以可以调用 <code>TreeMap#ceilingEntry</code> 方法，找到最近一个大于或等于给定 Key 值的节点 Entry。这样的操作相当于**一致性 Hash 算法的顺时针向前查找**的效果。
 
 # 六. 远程调用
-第六章
+
+[第五章](# 五. 集群容错)的七个步骤中，前四个步骤是 Cluster 层的工作。远程调用是后续步骤 5, 6, 7 的内容，同时也是 Cluster 层以下的工作。该部分对 Dubbo 远程调用的基础与实现进行总结，包括 Dubbo 协议，编解码器，Dubbo 线程模型。
 
 ## 6.1 Dubbo 协议
 
+Dubbo 协议设计参考了 TCP/IP 协议，每次 RPC 调用，报文都会包括**协议头**和**协议体**两个部分。  
+协议报文头部共 **16 字节**，携带信息有：
+
+1. **魔数**：标识该报文是 Dubbo 协议类型；
+2. **数据包类型**：标识该报文是请求或响应；
+3. **调用方式**：单向/双向；
+4. **事件标识**：0 表示当前数据包是请求或响应包；1 表示当前数据包是心跳包；
+5. **序列化器编号**：标识该数据用哪种方式序列化；包括 Hassian, FastJson, Kryo 等七种方式；
+6. **状态**：OK, CLIENT\_TIMEOUT, SERVER\_TIMEOUT, BAD\_REQUEST, BAD\_RESPONSE  等；
+7. **请求编号**：RPC 请求的唯一 ID，用来将请求和响应作关联；
+8. **消息体长度**：用 4 个字节表示消息体的长度；
+
+> 注：Dubbo 协议属于 Dubbo 框架的 Protocol 层。
+
 ## 6.2 编解码器
 
-## 6.3 业务处理：ChannelHandler
+编解码器有三种场景，**请求、响应、Telnet 调用**。主要对请求和响应场景进行总结。
+
+> 注：编解码属于 Dubbo 框架的 Exchange, Transport 层。
+
+### 6.2.1 编码器
+
+Dubbo 编码器主要是**将 Java 对象编码成字节流，返回给客户端**。所有的编解码层实现类都应该继承于 <code>ExchangeCodec</code> 类。  
+Dubbo 协议**请求**的编码方法 <code>ExchangeCodec#encodeRequest()</code> 中，按照 Dubbo 协议的内容编码成字节流，其中关键方法 <code>ExchangeCodec#encodeRequestData()</code> 将请求内容序列化。在该方法中**对接口、方法、方法参数类型、方法参数进行编码**，并写入字节流中。
+
+Dubbo 协议**响应**的编码方法 <code>ExchangeCodec#encodeResponse()</code> 基本类似，核心内容在于**序列化响应调用方法 encodeResponseData()**，以及**编码异常处理部分**。  
+1. <code>ExchangeCodec#encodeResponseData</code> 方法编码思路比较简单，编码内容可以分为**正常 Java 类**与**异常信息**两类，分别对其进行序列化操作。  
+2. 在 <code>ExchangeCodec#encodeResponse()</code> 方法中，出现编码异常处理的情况，首先将 ChannelBuffer 复位，避免造成缓冲区中的数据错乱；然后将异常信息通过 Channel 发送给客户端，防止客户端只有等到超时才感知到服务调用返回。
+
+### 6.2.2 解码器
+
+#### 6.2.2.1 粘包、半包
+
+> 注：参考地址：[《Dubbo源码解析（十七）Dubbo 处理TCP粘包拆包》](https://blog.csdn.net/u013076044/article/details/89279699)
+
+解码相较于编码比较复杂，因为在解码过程中涉及**粘包**和**半包**问题。Dubbo 是基于 TCP 协议进行数据传输的，粘包和半包问题就是 TCP 流协议的典型问题。  
+流就像是河里的流水，是连城一片的，中间并没有分界线，TCP 底层并不了解上层业务数据的具体含义，它会根据 TCP 缓冲区的实际情况进行包的划分。所以在业务上，一个完整的包可能会被 TCP 拆分成多个包发送，这种情况会导致**半包**；也可能把多个小包封装成一个大的数据包发送，这种情况会导致**粘包**。  
+
+由于底层 TCP 无法理解上层的业务数据，所以底层是无法保证数据包不被拆分和重组。这个问题只能通过上层应用设计协议的方式来解决。业界主流协议解决方案如下：
+
+1. **消息定长**：比如每个报文固定长度 200 字节，长度不够的用空格补位；
+2. **字符分割**：比如 FTP 协议，在包尾增加回车换行符作为分割；
+3. **将消息分为消息头与消息体**：消息头中包含表示该消息总长度的字段，通常会放到第一个字段，用 int32 表示消息总长度；
+4. **规定应用层协议**；
+
+Dubbo 使用的就是第四种方案，自行规定应用层的协议，即上面 [6.1](## 6.1 Dubbo 协议) 章节总结的内容。Dubbo 中 <code>ExchangerCodec</code> 将消息解析为请求 Request 与响应 Response 的角色。
+
+#### 6.2.2.2 解码过程
+
+解码过程可以分为两步，第一步是**报文头部解码**，第二步是**报文体解码**，并将报文体转换成 RpcInvocation。解码过程在 <code>ExchangeCodec#decode()</code> 方法中，第一步解码报文头部的过程如下：
+
+1. 检查魔数；
+2. 检查当前请求头是否完整，即是否大于 16 字节；如果不完整，则返回状态 <code>NEED_MORE_INPUT</code>；
+3. 获取此次请求体长度，判断**请求体 + 消息体长度**与**消息包长度**大小；
+	- 前者代表了一个报文的长度，后者代表此次读取的长度；
+	- 如果前者大于后者，说明这次消息不是完整的，也就是说发生了拆包现象；此时直接返回状态 <code>NEED_MORE_INPUT</code>；
+4. 正常状态，进入解析消息体的步骤；
+
+第二步报文体解码的方法在 <code>DubboCodec</code> 进行了重写，即方法 <code>DubboCodec#decodeBody()</code>。步骤如下：  
+
+1. **Request / Response**：根据 Dubbo 报文头中的 <code>FLAG_REQUEST</code> 标志位，判断这次消息是请求还是响应；
+2. **消息是否正常**：根据解析出来的状态码，判断这次消息是否正常；
+3. **反序列化**：解析消息使用的序列化方式，进行反序列化；
+4. **返回**：解析成功，将解析的请求（或响应）返回到上游方法；
+
+### 6.2.3 Telnet
+
+编解码器将 Telnet 当做明文字符串处理，根据 Dubbo 的调用规范，解析成调用命令格式，查找对应的 Invoker，发起方法调用。
+
+## 6.3 线程模型
+
+> 参考地址：[《Dubbo学习笔记8：Dubbo的线程模型与线程池策略》](https://www.cnblogs.com/xhj123/p/9095278.html)
+
+**Dubbo 默认底层网络通信使用 Netty 框架**。服务提供方 **NettyServer** 提供两级线程池，其中 **EventLoopGroup(boss)** 用来**接受客户端的连接请求**，并将接受的请求分发 (Dispatch) 给 **EventLoopGroup(worker)** 来处理。可以将 boss 和 worker 线程组称为 **IO 线程**，它的特点是不会发起新的 IO 请求，逻辑处理能迅速完成。有的包括查询数据库等操作的复杂操作处理慢，需要将这些复杂操作放到 **Dubbo 线程池**中（又称业务线程池）。根据请求消息被 IO 线程处理，还是被业务线程处理，Dubbo 提供了几种**线程模型**，不同线程模型实现不同的线程分发策略，同时各自实现了 **Dispatcher** 可扩展 SPI 接口。  
+
+### 6.3.1 分发策略
+
+Dispatcher 是线程派发器，真正的职责是**创建具有线程派发能力的 ChannelHandler**，比如 AllChannelHandler, MessageOnlyChannelHandler 等。
+
+#### 6.3.1.1 AllDispatcher
+
+**all** 策略，分发实现类 **AllDispatcher**，将所有消息都派发到 Dubbo 线程池，包括请求、响应、连接事件、断开事件、心跳等，是 Dispatcher 的默认实现。
+
+![all 策略](./pic/Dubbo_AllDispatcher.png)
+
+#### 6.3.1.2 ConnectionOrderedDispatcher
+
+**connection** 策略，分发实现类 **ConnectionOrderedDispatcher**，只将连接断开事件放到线程池中有序执行，其他线程派发到 Dubbo 线程池处理。
+
+![connection 策略](./pic/Dubbo_ConnectionOrderedDispatcher.png)
+
+#### 6.3.1.3 DirectDispatcher
+
+**direct** 策略，分发实现类 **DirectDispatcher**，所有方法调用和事件处理都在 IO 线程池中。不推荐该策略。
+
+![direct 策略](./pic/Dubbo_DirectDispatcher.png)
+
+#### 6.3.1.4 ExecutionDispatcher
+
+**execution** 策略，分发实现类 **ExecutionDispatcher**，只将请求类派发到 Dubbo 线程池处理，其他类型的 IO 事件在 IO 线程池中。
+
+![execution 策略](./pic/Dubbo_ExecutionDispatcher.png)
+
+#### 6.3.1.5 MessageOnlyChannelHandler
+
+**message** 策略，分发实现类 **MessageOnlyChannelHandler**，只在 Dubbo 线程池中处理请求和响应事件，其他事件在 IO 线程池中处理。
+
+![message 策略](./pic/Dubbo_MessageOnlyChannelHandler.png)
+
+#### 6.3.1.6 MockDispatcher
+
+**mock** 策略，分发实现类 **MockDispatcher**，默认返回 null。
+
+### 6.3.2 线程池策略
+
+扩展接口 ThreadPool 的 SPI 实现有如下几种：
+
+- **fixed**：固定大小线程池，启动时建立线程，不关闭，一直持有；默认实现；
+- **cached**：缓存线程池，空闲一分钟自动删除，需要时重建；
+- **limited**：可伸缩线程池，但池中的线程数只会增长不会收缩。只增长不收缩的目的是为了避免收缩时突然带来大流量引起性能问题。
+
+## 6.4 业务处理：ChannelHandler
 
 
 # 七. 稳定性
