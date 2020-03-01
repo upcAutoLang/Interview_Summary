@@ -49,7 +49,7 @@ Kafka 事务与数据库的事务定义基本类似，主要是一个原子性�
 
 1. 提供唯一的 **transactionalId**
 	- <code>properties.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "transacetionId");</code>
-	- Kafka 可以通过相同的 transactionalId 确定唯一的生产者。对于相同 transactionalId 的新生 Producer，实例被创建且工作时，旧的 Producer 实例将不再工作。即消息跨生产者的的**幂等性**。
+	- Kafka 可以通过相同的 transactionalId 确定唯一的生产者。对于相同 transactionalId 的新生 Producer 实例被创建且工作时，旧的 Producer 实例将不再工作。即消息跨生产者的的**幂等性**。
 2. 要求 Producer **开启幂等特性**
 	- 将 enable.idempotence 设置为 true；
 
