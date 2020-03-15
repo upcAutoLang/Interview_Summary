@@ -138,7 +138,9 @@ public static int value = 111;
 ClassLoader 中有一个 ClassLoader parent，记录其父类加载器。根类加载器 bootstrap ClassLoader 是最顶层的 ClassLoader，没有父类加载器。类加载器的加载范围不同，如果子类加载器想要加载父类加载器已经加载的类，可以通过双亲委派机制，直接访问父类加载器已经加载的类。   
 但是有的时候父类加载器也需要加载子类加载器的 Class，这时候就需要打破双亲委派机制，主要方式是使用 Thread 类里的线程上下文类加载器的方法 setContextClassLoader。
 
-# 四. JVM的内存结构，哪些是共享的，哪些是线程私有的？ Java虚拟机里堆栈分别存放什么？
+# 四. JVM 的内存结构
+
+哪些是共享的，哪些是线程私有的？ Java虚拟机里堆栈分别存放什么？
 
 # 五. Java的类加载在哪些情况下会触发？
 
