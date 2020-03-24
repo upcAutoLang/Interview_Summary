@@ -485,7 +485,9 @@ LFU 策略与 LRU 的计算方式大致相同，都是根据 Redis 对象头的 
 
 # 九. Redis 内存优化
 
-> 参考地址：[《一文深入了解 Redis 内存模型，Redis 的快是有原因的！》](https://mp.weixin.qq.com/s/7pSLPQQyeqRd7SuWGu8oJg)
+> 参考地址：  
+> [《一文深入了解 Redis 内存模型，Redis 的快是有原因的！》](https://mp.weixin.qq.com/s/7pSLPQQyeqRd7SuWGu8oJg)  
+> [《Redis集群与插槽分配(动态新增或删除结点)》](https://blog.csdn.net/shubingzhuoxue/article/details/82759686)
 
 了解 redis 的内存模型，对优化 redis 内存占用有很大帮助。下面介绍几种优化场景。
 
@@ -566,7 +568,7 @@ Redis 全量复制一般发生在 Slave 初始化阶段，这是 Slave 需要将
 2. 如果有多个最高优先级的 slave，则选取复制偏移量最大（即复制越完整）的当选；
 3. 如果以上条件都一样，选取 id 最小的 slave；
 
-挑选出需要继任的 slave 后，领头哨兵向该数据库发送命令使其升格为 master，然后再向其他 slave 发送命令接受新的 master，最后更新数据。将已经停止的旧的 master 更新为新的 master 的从数据库，使其恢复服务后以 slave 的身份继续运行。
+挑选出需要继任的 slave 后，领头哨兵向该节点发送命令，使其升格为 master，然后再向其他 slave 发送命令接受新的 master，最后更新数据。此外，<font color=red>已经停止的旧的 master 更新为新的 master 的从数据库，使其恢复服务后以 slave 的身份继续运行</font></font>。
 
 优点：
 
@@ -580,6 +582,69 @@ Redis 全量复制一般发生在 Slave 初始化阶段，这是 Slave 需要将
 2. 无法实现动态扩容；
 
 ## 10.3 集群模式
+
+### 10.3.1 Redis 集群结构
+
+Redis 集群模式如下图所示，每一个蓝色的圈都代表着一个 redis 的服务器节点，它们任何两个节点之间都是相互连通的，每一个节点都存有这个集群所有主节点以及从节点的信息。客户端可以与任何一个节点相连接，然后就可以访问集群中的任何一个节点。对其进行存取和其他操作。
+
+![Redis 集群架构图](./pic/Redis/Redis集群架构图.png)
+
+一般集群建议搭建**三主三从架构**，三主提供服务，三从提供备份功能。
+
+### 10.3.2 集群投票机制
+
+Redis 节点之间通过**互相的 ping-pong** 判断是否节点可以连接上。如果有一半以上的节点去 ping 一个节点的时候没有回应，集群就认为这个节点宕机了，然后去连接它的备用节点。这就是 Redis 的投票机制，具体原理如下图所示：  
+
+![Redis 集群投票机制](./pic/Redis/Redis集群投票机制.png)
+
+投票过程是集群中所有 master 参与，如果半数以上 master 节点与某个 master 节点通信超时 (cluster-node-timeout)，认为该 master 节点挂掉。
+整个集群不可用的判断条件：
+
+1. 如果集群**任意 master 挂掉，且当前 master 没有 slave**，这样该 master 无法转移，则集群进入 FAIL 状态；
+	- 也可以理解成集群的 **slot 映射 [0-16383] 不完整时**进入 FAIL 状态；
+2. 如果集群**超过半数以上 master 挂掉**，无论是否有 slave，集群进入 FAIL 状态.
+
+### 10.3.3 Redis 集群插槽分配
+
+在集群模式下，通过 cluster info 命令可以查看集群的信息，包括每个 Redis 节点的 ID、IP+端口、身份 (master/slave)、连接数量、分配插槽 (slot) 信息。  
+以执行命令 <code>set abc 123</code> 为例，Redis 将数据存到集群中的步骤如下：
+
+1. 客户端发送命令<code>set abc 123</code>，某个 Redis 节点接收到命令；
+2. 通过方法 <code>key("abc")</code> 计算出 slot 值，根据 slot 值找到对应的 Redis 节点；
+	- "abc" 的 slot 值为 7638；
+3. 重定向到该 Redis 节点，执行命令；
+
+> 注：插槽与 key 的关系：  
+> key 的有效部分使用 CRC16 算法，计算出 Hash 值，然后对 16384 取余获得 slot 值。有效部分指：
+> 
+> 1. key 值中有大括号 {} 的情况：例如 <code>key={hello}_grq</code> 中的 "hello"；
+> 2. 如果没有大括号，则整个 key 都是有效部分；
+
+### 10.3.4 Redis slot 重分配
+
+Redis 集群提供了 16384 个 slot，通过 Ruby 脚本 **redis-trib.rb** 实现 slot 平均分配给 N 个 master 节点。如果有一部分 slot 没有指定到节点，那么分配在这部分 slot 上的 key 值将不能使用。  
+但如果向集群中加入新的 master 节点，或者将某个 master 节点删除，则需要通过执行 **redis-trib.rb** 脚本实现 slot 的重分配。
+
+#### 10.3.4.1 新增节点
+
+新增节点后，实现 slot 重分配的步骤如下：
+
+1. 执行 ruby 脚本 <code>redis-trib.rb add-node {待添加节点 IP + 端口}</code>；
+	- 添加成功后，新添加的节点没有被分配 slot；
+2. 执行 <code>redis-trib reshard + {待分配目的节点}</code> 脚本命令，执行重分配操作；命令执行过程中，输入**要移动的 slot 数、待分配目的节点 ID**，以及从哪里分配节点（如果写 "all"，则将所有 master 节点的部分 slot 共同分配给该节点）；
+3. 执行完毕；
+
+#### 10.3.4.2 删除节点
+
+删除节点实现 slot 重分配步骤如下：
+
+1. 用 ruby 脚本将待删除节点的 slot 分配给其他 master 节点；
+2. 执行 ruby 脚本命令 <code>redis-trib.rb del-node {待删除节点 IP + 端口} {待删除节点 ID}</code>；
+3. 执行完毕；
+
+### 10.3.5 Redis 集群注意事项
+
+1. 多件命令操作（如 MGET, MSET），如果每一个 Key 都位于同一个节点，则可以正常支持，否则会提示错误；
 
 # 十一. Redis
 
