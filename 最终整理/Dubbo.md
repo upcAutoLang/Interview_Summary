@@ -132,11 +132,39 @@ if (!Constants.SCOPE_LOCAL.toString().equalsIgnoreCase(scope)) {
 
 第四章、第八章
 
-# 四. 启动与服务暴露
-
-第五章
+# 四. 启动与服务暴露、引用
 
 暴露：书 5.2.2 章，文章[《Dubbo服务暴露与注册》](https://zhuanlan.zhihu.com/p/87075790)
+
+## 4.1 启动时 dubbo 标签解析
+
+服务启动时，首先解析 dubbo 的配置文件。dubbo 的配置文件是一个 Sprng Bean 的 XML 配置文件，其中都是 dubbo 自定义的标签。Spring 启动过程中会使用 <code>BeanDefinitionParser</code> 解析 XML 配置文件中的 Bean，dubbo 就是提供了一个 <code>BeanDefinitionParser</code> 的实现类 <code>DubboBeanDefinitionParser</code>，其中的 parse 方法对解析 dubbo 自定义的标签（包括 ServiceBean, Provider, Consumer 等）进行解析，每种标签对应一种 Config 文件，同时对应一种处理逻辑。  
+其中对 <code>ServiceBean</code> 标签的解析，其中包含服务暴露的过程。
+
+> 注：名称的处理首先是在 Dubbo 的名称空间处理器 <code>DubboNamespaceHandler</code> 中，将一个个 dubbo 标签解析方法注册，这样在服务启动的时候，会触发对 XML 文件中所有 dubbo 标签的解析。
+
+## 4.2 服务暴露
+
+服务暴露主要通过 <code>ServiceBean</code> 完成。<code>ServiceBean</code> 实现了两个主要的 Spring 接口：<code>InitializingBean</code> 和 <code>ApplicationListener</code>。
+
+1. **InitializingBean#afterPropertiesSet()**：将前面进行的标签解析结果（包括 Application, Provider, Module, Register, Monitor, Protocol 等信息）保存起来；
+2. **ApplicationListener#onApplicationEvent()**：注册了 **ContextRefreshEvent** 事件，在 Spring 容器加载完毕后调用**服务接口的暴露**。
+
+从 ServiceBean 的 ApplicationListener 可以看到，服务接口的暴露是在 Spring 容器加载完毕后执行的。主要方法是通过 **doExport()** 方法实现的。  
+doExport() 方法中，会**将服务的 URL 地址通过 Invoker 的形式暴露出去**。在暴露的过程中 Invoker 是一种包装，将暴露出去的 RPC 接口、接口的实现类、在注册中心的 URL 地址等信息包装成 Invoker。暴露时根据配置文件中的 Protocol 信息，不同的 Protocol 类型执行各自 export 方法，将 Invoker 暴露出去。通常 Dubbo 会用 RegistryProtocol 执行 Invoker 的暴露。  
+RegistryProtocol 将 Invoker 封装的信息注册到注册中心上，同时本地记录服务提供者、消费者的列表。主要过程有两步：
+
+1. **启动 Netty 服务器监听**：调用 **DubboProtocol # export()** 方法，内部调用的 <code>openServer()</code> 方法会读取配置信息中的 IP 端口信息，启动一个 Netty 服务器并监听连接；
+2. **服务注册**：**RegistryProtocol # export()** 方法中，将 Invoker 中的 URL 信息将服务注册到注册中心，同时将注册中心的信息保存到本地。
+
+这样一个服务的暴露就完成了。如果我们想要调用其他的远程服务，由于在启动时已经将其他服务的调用信息从注册中心上获取并保存到了本地，所以直接本地获取对应远程服务的服务提供者，进行路由和负载均衡筛选出一个服务，对该服务进行远程调用。
+
+## 4.3 服务引用
+
+服务引用与服务暴露是比较类似的，服务暴露是服务提供者对外提供暴露服务，服务引用是服务消费者对服务进行消费的过程。服务引用是通过 ReferenceBean 实现的。  
+ReferenceBean 实现了 FactoryBean 接口。在 ReferenceBean 通过 FactoryBean#getObject() 方法实现远程引用对象，通过注册中心获取服务列表。引用通过 Protocol 执行引用，比如在 DubboProtocol, RegistryProtocol 中的 refer() 方法。  
+在 RegistryProtocol#refer() 方法中，订阅了该服务的远程服务，另外也会调用 DubboProtocol 的 refer() 方法。
+DubboProtocol#refer() 方法与 DubboProtocol#export() 方法类似，它开启了一个 Netty 客户端，connect 对应服务的 Netty Server，也就是与其他远程服务建立连接。
 
 # 五. 集群容错
 
@@ -371,7 +399,7 @@ Dubbo 协议**响应**的编码方法 <code>ExchangeCodec#encodeResponse()</code
 > 注：参考地址：[《Dubbo源码解析（十七）Dubbo 处理TCP粘包拆包》](https://blog.csdn.net/u013076044/article/details/89279699)
 
 解码相较于编码比较复杂，因为在解码过程中涉及**粘包**和**半包**问题。Dubbo 是基于 TCP 协议进行数据传输的，粘包和半包问题就是 TCP 流协议的典型问题。  
-流就像是河里的流水，是连城一片的，中间并没有分界线，TCP 底层并不了解上层业务数据的具体含义，它会根据 TCP 缓冲区的实际情况进行包的划分。所以在业务上，一个完整的包可能会被 TCP 拆分成多个包发送，这种情况会导致**半包**；也可能把多个小包封装成一个大的数据包发送，这种情况会导致**粘包**。  
+流就像是河里的流水，是连成一片的，中间并没有分界线，TCP 底层并不了解上层业务数据的具体含义，它会根据 TCP 缓冲区的实际情况进行包的划分。所以在业务上，一个完整的包可能会被 TCP 拆分成多个包发送，这种情况会导致**半包**；也可能把多个小包封装成一个大的数据包发送，这种情况会导致**粘包**。  
 
 由于底层 TCP 无法理解上层的业务数据，所以底层是无法保证数据包不被拆分和重组。这个问题只能通过上层应用设计协议的方式来解决。业界主流协议解决方案如下：
 
