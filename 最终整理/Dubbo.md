@@ -495,3 +495,51 @@ Sentinal？网上博客
 # 八. Dubbo 过滤器
 
 # 九. 决策
+
+# 十. 自研分布式服务治理系统与 Dubbo 的相似与区别
+
+## 10.1 分布式 RPC 调用
+
+自研分布式服务治理系统（简称集群管理系统）的实现思想与 Dubbo 基本相同，但由于涉及到跨语言调用问题，所以使用 gRPC 的远程调用方式，这是最大的区别。系统中的 gRPC 调用流程基本按照 **gRPC 服务端**与 **gRPC 客户端**进行说明，对应了 Dubbo 的服务提供者 (Provider) 与服务消费者 (Consumer)。
+
+### 10.1.1 gRPC 服务端
+
+服务端的调用链路整体逻辑上与 Dubbo 一样，经历了**解析 Spring Bean -> 服务暴露与注册**的启动时工作，以及**监听连接，执行远程只调用**的运行时工作。
+
+1. 获取所有 RPC 接口与实现类
+	- Spring 容器启动时，配置文件中包含了一个 bean 定义 RpcServiceExporter，用来注册和暴露 RPC 服务。该类是 RPC 服务暴露与注册的入口。
+	- RpcServiceExporter 实现了 BeanFactoryAware 接口，这样可以通过获取 DefaultListableBeanFactory 的方式，获取所有被 @RPCService, @RPCServiceImpl 注解的 Bean 对象。
+2. 动态生成实现类
+	- 遍历所有 RPCServiceImpl，使用 FreeMarker 模板生成 Java 类，进而生成 proto 源码；
+	- 根据生成的 Java 类实现动态编译生成实现类；
+	- 本地存储 RPC 服务接口 -> RPC 服务实现类的映射关系；
+		- 注：在 CPP 实现的 RPC 服务中，应该也会存储类似的一个关系；
+3. 服务注册：将 RPC 服务信息注册到 ZK 上；
+4. 服务暴露：
+	- 本地暴露：在之前的步骤中，将 RPC 接口与实现类用 Map 关联在一起，即为本地暴露；
+	- 服务暴露：gRPC 可以通过构建 NettyServer，打开端口监听连接，实现服务对外界的暴露。
+
+### 10.1.2 gRPC 客户端
+
+在第一次远程服务调用触发时，开始创建 gRPC 客户端
+
+1. 根据 RPC 接口类，生成 RPC 接口实现类；
+	- 生成的实现类是通过 FreeMarker 生成的，生成的类使用模板方法，实现了 gRPC 客户端的打桩与连接；
+	- 构建通道的过程，就会建立 Netty 客户端，连接指定的 IP 和端口，即连接对应的 RPC 服务端；
+	- 注：gRPC 客户端的构建需要三步：构建通道 (channel)，打桩 (stub)，调用远程方法，如下所示：
+```java
+// 构建通道
+ManagedChannelImpl channel = NettyChannelBuilder.forAddress("127.0.0.1", 6556).build();
+// 打桩
+DemoServiceGrpc.DemoServiceBlockingStub stub = DemoServiceGrpc.newBlockingStub(channel);
+// 调用远程方法
+stub.login(LoginRequest.getDefaultInstance());
+```
+2. 集群容错
+	- **获取所有服务信息**：从 ZK 上指定的节点上获取指定服务的所有信息；
+	- **路由**：通过简单的配置，排除部分服务；
+	- **负载均衡**：对于通过了路由之后，服务数量还多于一个的服务，通过负载均衡策略选择一个服务；
+		- 策略包括：随机 /RoundRobin / IP Hash / 一致性 Hash
+	- **集群容错**：我们的集群容错比较简单，只有 Failover 策略，调用一次失败之后，调用其他的可用服务。
+		- 实现方法类似于路由，将此次错误的地址作为排除内容，对剩下的服务地址再次进行负载均衡挑选，直到有一个服务调用成功，或者所有服务调用失败。
+
