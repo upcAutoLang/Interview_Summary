@@ -498,6 +498,8 @@ Sentinal？网上博客
 
 # 十. 自研分布式服务治理系统与 Dubbo 的相似与区别
 
+> 参考地址：[《gRPC学习笔记》](https://www.bookstack.cn/read/learning-grpc/README.md)
+
 ## 10.1 分布式 RPC 调用
 
 自研分布式服务治理系统（简称集群管理系统）的实现思想与 Dubbo 基本相同，但由于涉及到跨语言调用问题，所以使用 gRPC 的远程调用方式，这是最大的区别。系统中的 gRPC 调用流程基本按照 **gRPC 服务端**与 **gRPC 客户端**进行说明，对应了 Dubbo 的服务提供者 (Provider) 与服务消费者 (Consumer)。

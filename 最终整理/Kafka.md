@@ -632,6 +632,22 @@ Kafka 为了解决这个问题，在读消息时引入了**零拷贝技术**。�
 
 通过使用**拷贝描述符**的方法取代了**拷贝数据**，消除了剩下的最后一次 CPU 拷贝。
 
+## 十五. Kafka 生产者结构
+
+Kafka Producer 主要有三个部分组成：**主线程、Sender 线程、RecordAccumulator**。  
+
+- **主线程**：执行序列化、分区、拦截器处理等主要操作，并将消息缓存到 RecordAccumulator 中；
+- **Sender 线程**：从 RecordAccumulator 中拉数据，发送到 broker；
+- **RecordAccumulator**：缓存主线程的消息，并提供给 Sender 线程；
+
+生产者执行流程：
+
+1. 主线程处理数据，包括处理拦截器操作、序列化、分区；
+2. 主线程将数据发送给 RecordAccumulator；
+3. RecordAccumulator 将消息 (ProducerRecord) 压缩成 (ProducerBatch)，并以分区 (TopicPartition) - 消息队列 (Deque(ProducerBatch)) 的消息存储主线程发来的消息；
+4. Sender 从 RecordAccumulator 中拉取各分区的消息，并转换为 Broker - Deque(ProducerBatch) 的形式（因为对于 Sender 而言，只关心把消息发送到哪个 Broker 上）；
+5. Sender 最后将消息转换成 Broker - Request 的形式，推送给指定的 Broker；
+
 ## 其他提问
 
 - 说说你们公司线上生产环境用的是什么消息中间件？Kafka。
