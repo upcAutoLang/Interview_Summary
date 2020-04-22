@@ -171,7 +171,33 @@ ClassLoader 中有一个 ClassLoader parent，记录其父类加载器。根类�
 	- 因为Full GC本身执行时间较长（甚至超过1秒），而且除非采用G1 GC，否则其它的GC方式都会或多或少挂起所有线程执行（Stop-the-world），如果Full GC频繁发生，系统被挂起的次数就会增加，响应时间就会变慢。
 	- 同时，Full GC频繁发生，意味着你的内存分配机制存在问题，也许是内存泄露，有大量内存垃圾不断在老年代产生；也许是你的大对象（缓存）过多；也有可能是你的参数设置不好，minor GC清理不掉内存，导致每次minor GC都会触发Full GC；还有可能是你的老年代大小参数设置错误，老年代过小等等原因
 
-# 七. 
+# 七. JVM 逃逸分析
+
+> 参考地址：[《JVM的逃逸分析》](https://www.jianshu.com/p/f8326e26b6f9)
+
+## 7.1 逃逸的定义
+
+一个对象（或变量）在方法中处理完毕返回时，返回结果可能会被其他对象引用，或者全局引用，这种现象即为**逃逸**。或者可以说，一个对象指针被多个线程或方法引用时，该对象指针就是逃逸状态。
+
+```java
+public StringBuilder escapeDemo1(String a, String b) {
+    StringBuilder stringBuilder = new StringBuilder();
+    stringBuilder.append(a);
+    stringBuilder.append(b);
+    return stringBuilder;
+}
+```
+
+上述代码中，StringBuilder 在方法中是局部的，但返回时可能会有多个线程或方法引用 StringBuilder，这时就构成了逃逸。如果要改为非逃逸情况，则应该返回 String，最后 <code>return stringBuilder.toString()</code>。
+
+## 7.2 逃逸分析的原理
+
+方法栈上对象的调用，正常情况下应该是栈向 Java 堆中查找对象的引用，然后从堆中加载该对象到栈中，直到方法结束。  
+逃逸分析的优化后，不会将对象放到 Java 堆中，而是直接放到了栈中，此时该对象在栈中属于局部变量，不会发生逃逸。而且随着方法执行完毕，栈内存被回收，局部变量也回收了，这样也变相的减轻了 GC 的压力。
+
+## 7.3 逃逸分析适用范围
+
+由于栈空间一般小，无法存储大容量数据，所以目前的实现都是采用不那么准确，但是时间压力相对较小的算法来完成逃逸分析，可能导致效果不稳定。逃逸分析的效果只能在满足**高频和高数量**的**小容量的变量**分配结构，才是合适的。
 
 # 八. JVM 的锁优化
 
