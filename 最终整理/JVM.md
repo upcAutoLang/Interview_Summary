@@ -360,3 +360,68 @@ ObjectMonitor 中有两个队列 **EntryList** 与 **WaitSet**，用来保存 <c
 	- 如果当前线程在 owner 中，则释放当前 monitor，owner 指针置为 NULL，count 减 1，从 owner 中转移到 WaitSet 中；
 	- 如果当前线程在 EntryList 中，则转移到 WaitSet 中；
 4. 如果 owner 中的当前线程执行完毕，释放 monitor 并复位变量的值，其他在 EntryList 与 WaitSet 中的所有线程重新争抢进入 Owner 中。
+
+# 九. volatile 关键字
+
+> 参考地址：[《并发关键字volatile（重排序和内存屏障）》](https://www.jianshu.com/p/ef8de88b1343)
+
+## 9.1 volatile 关键字
+
+Volatile 变量具有 synchronized 的可见性特性，但是不具备原子特性。它有两条特性：
+
+1. 禁止指令的重排序；保证了有序性；
+2. 当一个线程修改了内存，volatile 关键字保证它能够立即刷新到主内存中；这条特性保证了 volatile 关键字的可见性；
+
+## 9.2 指令重排序
+
+通常情况下，处理器为了提高程序运行效率，可能会对输入代码进行优化，进行**指令的重排序**。它不保证程序中各个语句先后执行顺序与代码中完全一致，但保证程序最后执行结果与代码顺序一致。  
+编译器与处理器在重排序时，会遵守数据依赖性，不会改变存在数据依赖的指令的执行顺序。对于单线程程序，指令的重排序不会改变执行结果，但对于多线程程序，指令的重排序可能会对程序执行结果产生影响。所以需要**内存屏障**保证可见性。
+
+## 9.3 内存屏障
+
+内存屏障主要有两个作用：
+
+1. 阻止屏障两侧的指令重排序；
+2. 强制把写**缓冲区**与**高速缓存**的脏数据等写回主内存，让缓存中相应的数据失效。
+
+内存屏障可以分为两种：
+
+1. **Load Barrier**：读屏障，在指令前插入 Load Barrier，可以让高速缓存中的数据失效，强制从主内存中加载数据；
+2. **Store Barrier**：写屏障，在指令后插入 Store Barrier，可以将写入缓存中的最新数据更新写入到主内存中，令其他线程可见；
+
+将两种内存屏障进行两两组合，可以完成数据同步操作，也是 volatile 关键字的关键。
+
+- **LoadLoad**：L1; LoadLoad; L2
+	- 在 L2 与后续读取操作之前，保证 L1 要读取的数据被读取完毕；
+- **LoadStore**：L; LoadStore; S
+  - 在 S 与后续写操作执行前，保证 L 要读取的数据被读取完毕；
+- **StoreStore**：S1; StoreStore; S2
+  - 在 S2 与后续写操作执行前，要保证 S1 要写入的数据写入完毕；
+- **StoreLoad**：S; StoreLoad; L
+	- 在 L 与后续读操作之前，保证 S 要写入的数据写入完毕；
+	- 该操作保证了 S 操作的写入对所有处理器可见，开销最大；
+
+volatile 的读操作与写操作，在前后分别插入了内存屏障：
+
+1. volatile 读操作：读前插入 LoadLoad，读后插入 LoadStore；
+2. volatile 写操作：写前插入 StoreStore，写后插入 StoreLoad；
+
+通过内存屏障，避免了 volatile 变量和其他指令重排序，实现了线程之间的通信，volatile 表现出了锁的特性。
+
+## 9.4 Volatile 和 Synchronize 的区别
+
+从并发的三大特性角度来看 volatile 和 synchronized：
+
+- 原子性：volatile 不保证原子性，synchronized 用锁的方式 (lock, unlock) 保证原子性；
+- 可见性：在线程 A 中修改主内存变量的值，其他线程也会立即获得该变量的新值；volatile 与 synchronized 都保证可见性；
+	- volatile 依靠其特性，在线程中修改值后，会立即向主内存中进行赋值，实现其可见性；
+	- synchronized 依靠 lock 的特性，用 synchronized 修饰的方法，字节码上都处于 moniterenter 与 moniterexit 之间，这部分字节码会严格按照顺序执行；
+- 有序性：保证代码的顺序执行；
+	- volatile 的自身特性：禁止指令的重排列；
+	- synchronized 依旧依靠 lock 的特性；
+
+> 注：  
+> 
+> - synchronized 是重量级的锁。具体含义，是指 Java 线程是映射到操作系统内核的**轻量级进程**执行的；而执行一个轻量级进程，就需要从用户模态切换到系统模态。如果 synchronized 使用次数过多，就意味着模态切换次数太多，消耗内核资源过多。
+> - 锁优化（自旋锁、锁释放、锁粗化、轻量级锁、偏向锁）是针对 synchronized 关键字进行优化；
+
