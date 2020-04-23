@@ -648,6 +648,42 @@ Kafka Producer 主要有三个部分组成：**主线程、Sender 线程、Recor
 4. Sender 从 RecordAccumulator 中拉取各分区的消息，并转换为 Broker - Deque(ProducerBatch) 的形式（因为对于 Sender 而言，只关心把消息发送到哪个 Broker 上）；
 5. Sender 最后将消息转换成 Broker - Request 的形式，推送给指定的 Broker；
 
+# 十六. Kafka 消息压缩与日志压缩
+
+## 16.1 消息压缩
+
+日志 v2 版本的压缩，优化内容：
+
+1. **RecordBatch 与 Record**：对多条消息 (Record) 进行压缩，称为消息集 (RecordBatch)，压缩形式为外层 (RecordBatch) - 内层消息 (Record) 的形式，每个消息集对应一个或多个消息；
+2. **变长字段 Variant**：变长字段用来对数值内容进行压缩；
+	- (1) Variant 变长字段可以表示 int32, int64, enum 等多种类型的数据；
+	- (2) Variant 使用 **Zigzag** 编码，对小数值优化效果很好，尤其是小数值的负数；
+		- 例如 int32 类型的 1, -1 占用 4Bytes，而用 Variant 编码后只占用 1Bytes；
+3. 内层消息的偏移量、时间戳字段使用**增量**表示，这样内层多条 Record 的偏移量与时间戳数值很小，用 Variant 编码的压缩效果明显；
+
+## 16.2 日志压缩
+
+Kafka 日志压缩类似于 Redis 持久化的 RDB 模式，假设 Kafka 崩溃，通过日志文件恢复最终状态时，Kafka 只需要关心最新状态，并不关心每一时刻的状态。  
+Kafka 日志压缩主要是针对两种数据：
+
+1. Key 值相同的数据，压缩后只记录同 Key 值最新的一条数据；
+2. Key 不为空，Value 为空的消息，这种消息在日志压缩过程中会被设置为墓碑消息；
+
+### 16.2.1 日志压缩结构
+
+日志压缩是对**分区**进行的。在 Kafka 的 <code>log.dirs</code> 路径下有文件 <code>cleaner-offset-checkpoint</code> 文件，该文件中包含所有分区已清理数据偏移量信息。 
+对于每个分区的日志分段，可以将其分成两个部分：
+
+- **clean**：被清理的部分，所以它的消息偏移量是断续的；
+- **dirty**：没有被清理的部分，该部分的消息偏移量连续的；
+
+### 16.2.2 日志压缩流程
+
+1. 日志清理线程定时执行压缩任务，遍历分区内所有消息，记录所有 key 值，以及每个 Key 值最后出现的 offset，将两者关联并记录下来，形成一个 **key(hashcode) - offset** 的 Map（极小可能会出现 Hash 碰撞情况）；
+2. 清理过程中，同时会标记墓碑消息，在后续周期的日志清理过程中，将墓碑消息清除；
+3. 每次清理对日志分段分组，以**大小之和不超过 1G 的日志文件**，或者**大小之和不超过 10M 的索引文件**为一组，进行压缩处理；
+4. 压缩处理完毕后，替代原有日志文件，并将日志压缩结果存到 <code>log.dirs/cleaner-offset-checkpoint</code> 文件中
+
 ## 其他提问
 
 - 说说你们公司线上生产环境用的是什么消息中间件？Kafka。
