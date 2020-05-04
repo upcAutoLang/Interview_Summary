@@ -268,11 +268,26 @@ Hash 可以使用 Hashtable 或者 ziplist 结构来实现。Hash对象只有同
 
 ## 5. 压缩列表 ziplist
 
-当一个列表键只包含少量列表项，且是小整数值或长度比较短的字符串时，那么redis就使用ziplist（压缩列表）来做列表键的底层实现。
+当 hash 与 zset 数据很少时，为了节省空间，Redis 就使用 **ziplist（压缩列表）**做列表键的底层实现。  
+**ziplist 是 Redis 为了节约内存而开发的**，是由一系列特殊编码的连续内存块（而不是像双端链表一样每个节点是指针）组成的顺序型数据结构，是一个**可以双向遍历的压缩链表**。ziplist 空间压缩的非常紧凑，所以**只适合小数据量的情况**。
 
 ![img](https://img2018.cnblogs.com/blog/1044046/201903/1044046-20190303095934916-1182103524.png)
 
-**ziplist是Redis为了节约内存而开发的**，是由一系列特殊编码的连续内存块(而不是像双端链表一样每个节点是指针)组成的顺序型数据结构；具体结构相对比较复杂，有兴趣读者可以看Redis 哈希结构内存模型剖析。
+ziplist 的数据结构如下所示：
+
+- **ziplist**：
+  - size：ziplist 的容量；
+  - tail：尾部节点，与 entry 的 prevlen 字段配合，可以实现双向遍历的后续遍历；
+  - **entry[]**：列表内容；
+  - end：ziplist 的结束标志；
+- **entry**：
+  - **int prevlen**：前一个 entry 占用空间大小，用于 ziplist 的后续遍历；
+  - **int encoding**：编码，决定 entry 的数据类型；
+  - **byte[] content**：entry 的数据内容
+
+每一个 entry 的数据内容是由 **encoding** 字段决定的，内容十分复杂，根据不同的 encoding 值，可以决定 entry 的 content 是哪种长度的 int，哪种长度的字符串。  
+
+ziplist 的空间压缩十分紧密，所以占用空间很小。但相应的，增删改时代价较大。插入数据时，都需要用 realloc 重新申请内存，申请内存可能是重新分配整个新 ziplist 的内存，也可能是在 ziplist 尾部申请空间。更新数据时，由于每个 entry 都有前一个 entry 占用空间大小的信息（prevlen 字段），所以更新数据时会触发前向数据的级联更新。综上所述，ziplist 只适合小数据集。
 
 > 注：
 > 1. List 满足以下条件才会使用 ziplist，如果其中之一不满足，则转换为**双端链表**。
