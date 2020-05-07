@@ -138,7 +138,7 @@ if (!Constants.SCOPE_LOCAL.toString().equalsIgnoreCase(scope)) {
 
 ## 4.1 启动时 dubbo 标签解析
 
-服务启动时，首先解析 dubbo 的配置文件。dubbo 的配置文件是一个 Sprng Bean 的 XML 配置文件，其中都是 dubbo 自定义的标签。Spring 启动过程中会使用 <code>BeanDefinitionParser</code> 解析 XML 配置文件中的 Bean，dubbo 就是提供了一个 <code>BeanDefinitionParser</code> 的实现类 <code>DubboBeanDefinitionParser</code>，其中的 parse 方法对解析 dubbo 自定义的标签（包括 ServiceBean, Provider, Consumer 等）进行解析，每种标签对应一种 Config 文件，同时对应一种处理逻辑。  
+服务启动时，首先解析 dubbo 的配置文件。dubbo 的配置文件是一个 Sprng Bean 的 XML 配置文件，其中都是 dubbo 自定义的标签。Spring 启动过程中会使用 <code>BeanDefinitionParser</code> 解析 XML 配置文件中的 Bean，dubbo 就是提供了一个 <code>BeanDefinitionParser</code> 的实现类 <code>DubboBeanDefinitionParser</code>，其中的 parse 方法对解析 dubbo 自定义的标签（包括 Service, Reference, Registry 等）进行解析，每种标签对应一种 Config 文件，同时对应一种处理逻辑。  
 其中对 <code>ServiceBean</code> 标签的解析，其中包含服务暴露的过程。
 
 > 注：名称的处理首先是在 Dubbo 的名称空间处理器 <code>DubboNamespaceHandler</code> 中，将一个个 dubbo 标签解析方法注册，这样在服务启动的时候，会触发对 XML 文件中所有 dubbo 标签的解析。
@@ -494,7 +494,29 @@ Sentinal？网上博客
 
 # 八. Dubbo 过滤器
 
-# 九. 决策
+# 九. Dubbo 服务调用链路
+
+> 参考地址：[《Dubbo中服务消费者和服务提供者之间的请求和响应过程》](https://www.jianshu.com/p/a96f16f26269)
+
+## 9.1 初始化
+
+**服务提供者**启动时，对外暴露一个 Exporter，它是一个可以接受外界连接代理对象，接受连接的方式是启动一个 Netty Server 监听连接。  
+**服务消费者**启动时，调用 RPC 接口时调用的是一个 Invoker 接口，类型是 RpcInvocation。它是一个通过**动态代理**方式生成的代理对象，可以通过 Netty Client 连接服务提供者。
+
+## 9.2 调用链路
+
+### 9.2.1 消费者发起调用请求
+
+消费者调用 Invoker 时，实际上调用的是一个由 Java 动态代理生成的代理对象。该代理对象经过 Cluster 层的路由与负载均衡，找到一个服务节点，将调用参数封装成 Request 形式，通过 Netty Client 将数据进行序列化，通过 Netty 发送给对应的服务提供者。
+
+### 9.2.2 提供者处理请求
+
+服务提供者的 Netty Server 监听到消费者发送过来的请求信息，首先进行解码，解码后的内容投入到提供者的线程分发器 AllDispatcher 中，然后服务请求就在线程池中处理。  
+处理请求时，首先通过请求信息获取提供者的 Invoker 对象，这个 Invoker 对象是一个用 JavassitProxyFactory 生成的代理对象，提供者自己用它获取实际的 RPC 接口实现类，并执行调用的。找到实际的接口实现类，并执行业务逻辑处理后，用同样的方法，将相应封装成 Response，用 Netty 把编码后的相应发送给消费者。
+
+### 9.2.3 消费者处理响应
+
+消费者接收到提供者发来的响应，解码后投入到线程分发器中，置入线程池。放到线程池的是一个 DefaultFuture 对象，其中包含了响应结果。在前面第一步发起调用请求的过程中，负载均衡之后的调用就是通过 RpcInvocation 代理对象使用 DefaultFuture.get() 方法异步获取响应内容，这也是 RPC 远程调用从同步转为异步的方式。
 
 # 十. 自研分布式服务治理系统与 Dubbo 的相似与区别
 
