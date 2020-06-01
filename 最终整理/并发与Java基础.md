@@ -185,21 +185,22 @@ JVM 层面的锁优化是我们不能用代码控制的，我们最多只能从�
 对于读多写少的场景，可以使用读写分离的思想，读的时候不加锁，写的时候加锁。  
 典型示例：Redis 的主写从读、数据库的读写分离、Java 的 <code>CopyOnWriteArrayList, CopyOnWriteArraySet</code>。
 
-# 五. 加锁的机制
+# 五. ThreadLocal
 
-> 参考网址：  
-> [《mysql共享锁与排他锁》](https://www.cnblogs.com/boblogsbo/p/5602122.html)  
+> 参考地址：[《Java中的ThreadLocal详解》](https://www.cnblogs.com/fsmly/p/11020641.html)
 
-**共享锁与排他锁**：
+ThreadLocal 用来保证规避多线程访问线程不安全的情况，每个线程访问自己的副本变量，这样就避免了对资源的抢占导致数据不一致的问题。  
 
-- **共享锁 (S)**：对一条数据上共享锁，多个事务可以对该条数据共享同一个共享锁，但是只可以读，不可以写；
-	- select 语句是默认不加锁的，也可以显式的加锁。添加共享锁的 select 语句是 select \* lock in share mode;
-- **排他锁 (X)**：一个事务对一条数据加上排他锁，其他事物就不能获取该行的其他锁（包括其他的共享锁和排他锁）；
-	- 注：这种理解是错误的：<font color=red>对一条数据上排他锁，该条数据对其他事务的读写都被拒绝。</font>
-	- 在 InnoDB 中，使用 insert, update, delete 语句会自动加上共享锁；
-	- 添加排他锁的 select 语句：select \* for update
+## 5.1 原理
 
-共享锁与排他锁见上。
+线程 Thread 中用 <code>ThreadLocalMap</code> 类型的 threadLocals, inheritableThreadLocals 存储当前线程与子线程数据的副本变量。  
+ThreadLocal 是不支持继承的，子线程在 ThreadLocal 中无法获取到父线程的副本。所以为了访问父线程的变量，Thread 类提供了 inheritableThreadLocals 字段。创建线程时调用 init() 方法，会判断父线程，也就是当前线程的 inheritableThreadLocals 是否为 null。如果不为 null，就会将数据存入 inheritableThreadLocals 中，用来获取父线程的 ThreadLocal 值，创建子线程时，会将父线程的 inheritableThreadLocals 复制给子线程。由于 InheritableThreadLocal 类继承与 ThreadLocal，而且重写了 get, set 方法，所以此后对 ThreadLocalMap 的操作，都是对 inheritableThreadLocal 执行的。
+
+## 5.2 内存泄漏问题
+
+由于 ThreadLocalMap 的 Entry 中，Key 字段是继承于 <code>WeakReference</code> 的，属于弱引用，只要被 GC，就会被回收。而 Entry 的 Value 如果是强引用，那么触发的一次 GC 会将 Key 回收，而强引用的 Value 由于与 Thread 有联系，所以只要该线程不结束，该 Value 不会被 GC 回收，这样就造成了内存泄漏。  
+所以在实际使用完 ThreadLocalMap 后，要及时的调用 remove 方法。
+
 
 # 六. 多线程的六种状态？
 

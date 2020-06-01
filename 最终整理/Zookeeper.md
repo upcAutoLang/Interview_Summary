@@ -278,10 +278,19 @@ Leader选举是保证分布式数据一致性的关键所在。当 Zookeeper 集
 以上 10 个步骤就是 FastLeaderElection 的核心，其中步骤4-9会经过几轮循环，直到有Leader选举产生。
 
 ## 16. 数据同步
-直接差异化同步（DIFF同步）
-先回滚再差异化同步（TRUNC+DIFF同步）
-仅回滚同步（TRUNC同步）
-全量同步（SNAP同步）
+
+当各个节点已经自我恢复并选举出leader后，leader就开始和follows进行数据同步了，具体的逻辑可以见{org.apache.zookeeper.server.quorum.LearnerHandler}中：
+
+leader构建NEWLEADER包，内含leader最大数据的zxid, 广播给follows，然后leader根据follower数量为每个follower创建一个LearnerHandler线程来处理同步请求：leader主线程阻塞，等待超过半数follower同步完数据之后成为正式leader。
+follower接收到NEWLEADER包后响应FOLLOWERINFO给leader，告知本方数据最大的zxid值； leader接收到回馈后开始判断：
+
+如果follower和leader数据一致，则直接发送DIFF告知已经同步；
+判断这一阶段内有无已经北提交的决议值，如果有，那么
+a) 如果有部分数据没有同步，leader发送DIFF包将有差异的数据同步过去，同时将follower没有的数据逐个发送commit包给follower要求记录下来；
+b) 如果follower数据zxid更大，发送TRUNC包给follower要求删除多余数据
+如果这一阶段没有提交的决议，直接发送SNAP包将快照同步给follower
+以上消息完毕后，LEADER发送UPTODATE包告知follower当前数据已同步，等待follower的ACK完成同步过程。
+
 ## 17. zookeeper是如何保证事务的顺序一致性的？
 
 整个集群完成Leader选举之后，Learner（Follower和Observer的统称）回向Leader服务器进行注册。当Learner服务器想Leader服务器完成注册后，进入数据同步环节。

@@ -138,7 +138,7 @@ if (!Constants.SCOPE_LOCAL.toString().equalsIgnoreCase(scope)) {
 
 ## 4.1 启动时 dubbo 标签解析
 
-服务启动时，首先解析 dubbo 的配置文件。dubbo 的配置文件是一个 Sprng Bean 的 XML 配置文件，其中都是 dubbo 自定义的标签。Spring 启动过程中会使用 <code>BeanDefinitionParser</code> 解析 XML 配置文件中的 Bean，dubbo 就是提供了一个 <code>BeanDefinitionParser</code> 的实现类 <code>DubboBeanDefinitionParser</code>，其中的 parse 方法对解析 dubbo 自定义的标签（包括 Service, Reference, Registry 等）进行解析，每种标签对应一种 Config 文件，同时对应一种处理逻辑。  
+服务启动时，首先解析 dubbo 的配置文件。dubbo 的配置文件是一个 Spring Bean 的 XML 配置文件，其中都是 dubbo 自定义的标签。Spring 启动过程中会使用 <code>BeanDefinitionParser</code> 解析 XML 配置文件中的 Bean，dubbo 就是提供了一个 <code>BeanDefinitionParser</code> 的实现类 <code>DubboBeanDefinitionParser</code>，其中的 parse 方法对解析 dubbo 自定义的标签（包括 Service, Reference, Registry 等）进行解析，每种标签对应一种 Config 文件，同时对应一种处理逻辑。  
 其中对 <code>ServiceBean</code> 标签的解析，其中包含服务暴露的过程。
 
 > 注：名称的处理首先是在 Dubbo 的名称空间处理器 <code>DubboNamespaceHandler</code> 中，将一个个 dubbo 标签解析方法注册，这样在服务启动的时候，会触发对 XML 文件中所有 dubbo 标签的解析。
@@ -512,7 +512,7 @@ Sentinal？网上博客
 ### 9.2.2 提供者处理请求
 
 服务提供者的 Netty Server 监听到消费者发送过来的请求信息，首先进行解码，解码后的内容投入到提供者的线程分发器 AllDispatcher 中，然后服务请求就在线程池中处理。  
-处理请求时，首先通过请求信息获取提供者的 Invoker 对象，这个 Invoker 对象是一个用 JavassitProxyFactory 生成的代理对象，提供者自己用它获取实际的 RPC 接口实现类，并执行调用的。找到实际的接口实现类，并执行业务逻辑处理后，用同样的方法，将相应封装成 Response，用 Netty 把编码后的相应发送给消费者。
+处理请求时，首先通过请求信息获取提供者的 Invoker 对象，这个 Invoker 对象是一个用 JavassitProxyFactory 生成的代理对象，提供者自己用它获取实际的 RPC 接口实现类，并执行调用的。找到实际的接口实现类，并执行业务逻辑处理后，用同样的方法，将响应封装成 Response，用 Netty 把编码后的响应发送给消费者。
 
 ### 9.2.3 消费者处理响应
 
