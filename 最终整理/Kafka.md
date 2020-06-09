@@ -15,7 +15,7 @@ producers通过网络将消息发送到Kafka集群，集群向消费者提供消
 ### 1.2 Kafka 分区的 HW, LEO
 
 > 参考地址：  
-> [《Kafka中的HW、LEO、LSO等分别代表什么？》](https://www.cnblogs.com/yoke/p/11486196.html)
+> [《Kafka中的HW、LEO、LSO等分别代表什么？》](https://www.cnblogs.com/yoke/p/11486196.html)  
 
 **HW (High Watermark)**，高水位，它标识了一个特定的消息偏移量，消费者只能拉取到这个  offset 之前的消息。**HW 是针对于<font color=red>分区</font>的概念**，对消费者而言，只能消费 HW 之前的消息。   
 **LEO (Log End Offset)，待写入日志偏移量**，它标识了当前日志文件中下一条待写入的消息的 offset。**LEO 是针对于<font color=red>ISR 集合中分区副本</font>的概念**，ISR 集合中每个分区的副本都会维护自身的 LEO。此外，**ISR 集合中最小的 LEO，即为分区的 HW**。
@@ -41,6 +41,9 @@ producers通过网络将消息发送到Kafka集群，集群向消费者提供消
 
 
 ## 二. Kafka 事务
+
+> 参考地址：  
+> [《【干货】Kafka 事务特性分析》](https://www.cnblogs.com/middleware/p/9477133.html)
 
 ### 2.1 Kafka 事务简述
 
@@ -91,35 +94,42 @@ producer.abortTransaction();
 
 基本步骤如下：
 
-#### 2.3.1 查找 TransactionalCoordinator
+#### 2.3.1 查找事务协调者
 
-Producer 向 Broker 集群发送 FindCoordinatorRequest，Broker 集群根据 Request 中包含的 transactionalId 查找对应的 TransactionalCoordinator 节点并返回给 Producer。
+生产者首先会发起一个查找事务协调者 (TransactionalCoordinator) 的请求 (FindCoordinatorRequest)，Broker 集群根据 Request 中包含的 transactionalId 查找对应的 TransactionalCoordinator 节点并返回给 Producer。
 
 #### 2.3.2 获取 Producer ID
 
-Producer 向刚刚找到的 TransactionalCoordinator 发送 InitProducerIdRequest 请求，为当前 Producer 分配一个 Producer ID。
+生产者获得协调者信息后，向刚刚找到的 TransactionalCoordinator 发送 InitProducerIdRequest 请求，为当前 Producer 分配一个 Producer ID。分两种情况：
+
+- 不包含 transactionId：直接生成一个新的 Producer ID，返回给生产者客户端；
+- 包含 transactionId：根据 transactionId 获取 PID，这个对应关系保存在事务日志中（上图中的 2a 步骤）；
 
 > 注：如果 TransactionalCoordinator 第一次收到包含该 transactionalId 的消息，则将相关消息存入主题 \_\_transaction\_state 中。
 
 #### 2.3.3 开启事务
 
-Producer 发送第一条消息，则 TransactionalCoordinator 认为已经发起了事务。
+生产者通过方法 <code>producer.beginTransaction()</code> 启动事务，此时只是生产者内部状态记录为事务开始。对于事务协调者，直到生产者发送第一条消息，才认为已经发起了事务。
 
 #### 2.3.4 消费-转换-生产
 
-前面的阶段都是开始阶段，该阶段包含了整个事务的处理过程。需要做如下工作：
+前面的阶段都是开始阶段，该阶段包含了整个事务的处理过程，消费者和生产者互相配合，共同完成事务。需要做如下工作：
 
-1. **存储对应关系**
+1. **存储对应关系，通过请求增加分区**
 	- Producer 在向新分区发送数据之前，首先向 TransactionalCoordinator 发送请求，使 TransactionalCoordinator 存储对应关系 **(transactionalId, TopicPartition)** 到主题 \_\_transaction\_state 中。
 2. **生产者发送消息**
-	- 与普通的发送消息相同；
-3. **处理消费和发送**
-4. **事务位移提交**
-5. **提交或终止事务**
-	- 在正常结束或者异常结束，都会结束当前事务。Producer 向 TransactionalCoordinator 发送 EndTxnRequest 请求，TransactionalCoordinator 收到请求后执行如下操作：
-		1. 将**准备完毕消息 (PREPARE\_COMMIT)** 或 **准备异常消息 (PREPARE\_ABORT)**  消息写入主题 \_\_transaction\_state；
-		2. 通过 WriteTxnMarkersRequest 请求，将 COMMIT 或 ABORT 信息写入用户的**普通主题**和**\_\_consumer\_offsets**。
-		3. 将**消费成功消息 (COMPLETE\_COMMIT)**  或**消费异常中止消息 (COMPLETE\_ABORT)**  消息写入 \_\_transaction\_state 中；
+	- 基本与普通的发送消息相同，生产者调用 <code>producer.send()</code> 方法，发送数据到分区；
+	- 发送的请求中，包含 pid, epoch, sequence number 字段；
+3. **增加消费 offset 到事务**
+	- 生产者通过 <code>producer.senOffsetsToTransaction()</code> 接口，发送分区的 Offset 信息到事务协调者，协调者将分区信息增加到事务中；
+4. **事务提交位移**
+	- 在前面生产者调用事务提交 offset 接口后，会发送一个 TxnOffsetCommitRequest 请求到消费组协调者，消费组协调者会把 offset 存储到 Kafka 内部主题 \_\_consumer\_offsets 中。协调者会根据请求的 pid 与 epoch 验证生产者是否允许发起这个请求。
+	- epoch：生产者用于标识同一个事务 ID 在一次事务中的轮数，每次初始化事务的时候，都会递增，从而让服务端知道生产者请求是否为旧的请求。
+	- 只有当事务提交之后，offset 才会对外可见。
+5. **提交或回滚事务**
+	- 用户调用 <code>producer.commitTransaction()</code> 或 <code>abortTransaction()</code> 方法，提交或回滚事务；
+	- **EndTxnRequest**：生产者完成事务之后，客户端需要显式调用结束事务，或者回滚事务。前者使消息对消费者可见，后者使消息标记为 abort 状态，对消费者不可见。无论提交或者回滚，都会发送一个 EndTxnRequest 请求到事务协调者，同时写入 **PREPARE\_COMMIT** 或者 **PREPARE\_ABORT** 信息到事务记录日志中。
+	- **WriteTxnMarkerRequest**：事务协调者收到 EndTxnRequest 之后，其中包含消息是否对消费者可见的信息，然后就需要向事务中各分区的 Leader 发送消息，告知消费者当前消息时哪个事务，该消息应该接受还是丢弃。每个 Broker 收到请求之后，会把该消息应该 commit 或 abort 的信息写到数据日志中。
 
 ### 2.4 消息事务
 
